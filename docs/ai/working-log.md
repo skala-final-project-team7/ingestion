@@ -185,3 +185,24 @@ cache·store 공유 재실행 멱등성(재upsert 스킵), ③ ACL 누락 페이
 
 **후속(featureI-7b TBD)**: 실 어댑터(E5/BM25/Qdrant/Mongo from_settings) 부트스트랩 + pika consumer
 실행 loop + CLI 엔트리포인트(인프라 의존 — 통합 환경 검증).
+
+---
+
+## 2026-05-26 — featureI-7b: 의존성 부트스트랩(composition root) (FR-003/FR-004 조립)
+
+**작업**: Worker·crawl 이 쓰는 외부 의존성을 `Settings.use_real_adapters` 토글로 PoC(전부 Fake) 또는
+실 어댑터로 조립하는 composition root. config.py 의 use_real_adapters 패턴 재사용.
+
+**구현**: `app/ingestion/bootstrap.py`
+- `build_raw_page_store(settings)` — PoC `FakeRawPageStore` / 실 `MongoRawPageStore.from_settings`.
+- `build_document_analyzer(settings)` — PoC `None`(chunk_page 라벨 폴백) / 실 `DocumentAnalyzer`
+  (`OpenAIDocTypeClassifier` + `MySQLSpaceDocTypeCache`).
+- `build_chunking_worker_deps(settings, *, raw_store=None)` — PoC Fake 전부(FakeQdrantPoolStore 등) /
+  실 E5+BM25+Qdrant.from_settings+Mongo cache/jobs+분석기. `raw_store` 주입 시 crawl·worker 공유
+  (in-process PoC). 실 어댑터는 **함수 내 지연 import**(torch/qdrant/openai 를 실행 시점으로 미룸).
+
+**검증**: ruff/format + mypy app(49 files) 통과. PoC 모드 빌더(Fake 반환·raw_store 공유) 단위 테스트
+`tests/ingestion/test_bootstrap.py`. 실 어댑터 모드는 인프라 의존이라 통합 환경에서 검증.
+
+**후속(featureI-7c TBD)**: pika consumer/publisher 실행 loop + CLI 엔트리포인트(RabbitMQ 연결).
+`Settings` 에 `rabbitmq_url` 추가 필요.

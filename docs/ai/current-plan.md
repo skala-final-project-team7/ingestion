@@ -254,8 +254,11 @@
   `FakeQdrantPoolStore` upsert 를 **전 체인** 검증. 재실행 멱등성(캐시 skip), ACL 누락 페이지 전파 차단.
 - **완료 기준**: 전 체인 end-to-end 테스트 통과 + `verify.sh`. 운영 합성(real adapters + pika consumer
   loop)은 featureI-7b TBD 로 명시.
-- **TBD(후속 featureI-7b)**: 실 어댑터(E5/BM25/Qdrant/Mongo from_settings) 부트스트랩 + pika consumer
-  실행 loop + CLI 엔트리포인트(인프라 의존 — 통합 환경에서 검증).
+- **featureI-7b (구현 완료)**: `app/ingestion/bootstrap.py` — Settings 기반 의존성 조립
+  (`build_raw_page_store`/`build_document_analyzer`/`build_chunking_worker_deps`, PoC Fake vs 실 어댑터
+  지연 import). PoC 모드 단위 테스트 완료.
+- **TBD(후속 featureI-7c)**: pika consumer/publisher 실행 loop + CLI 엔트리포인트(RabbitMQ 연결 —
+  인프라 의존, 통합 환경에서 검증). `Settings` 에 rabbitmq_url 추가 필요.
 
 ## Milestone D — 데이터 동기화 에이전트 (FR-005)
 
