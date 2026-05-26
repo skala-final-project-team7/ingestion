@@ -198,6 +198,29 @@
 - ACL·access_token/cloud_id 전달 경로는 featureI-6와 동일 TBD(검색 정확도/실연동 — 병렬 협의).
 - 실 임베딩 모델(E5 ~2.4GB)·Qdrant 서버는 통합 테스트에만 필요. 단위/CI 는 Fake 로 대체.
 
+### featureI-4b: 문서 분석기 [Agent] — GPT-4o-mini doc_type 판별 + MySQL 캐싱 (FR-003)  📋 진행 중
+
+- **작업 목표**: featureI-4 의 라벨 휴리스틱 폴백을 대체해, **스페이스 단위 1회** 본문 doc_type 을
+  6유형(incident/operation/faq/meeting/adr/troubleshoot)으로 LLM 판별하고 MySQL
+  `space_doc_type_cache`(db-schema §3.1)에 캐싱한다. 이후 같은 스페이스의 모든 페이지가 캐시를 재사용.
+- **브랜치**: `feat/#8/document-analyzer` (feat/#7 머지 후 분기 권장).
+- **분류 [Agent] 규칙(app/CLAUDE.md §5)**: GPT-4o-mini, Function Calling 으로 스키마 강제, 타임아웃 +
+  Fallback. 신뢰도 < 0.6 또는 LLM 실패 시 `DocType.OPERATION` 폴백(DocType 에 'general' 없음 — db-schema
+  confidence 주석과 정합. CLAUDE.md 의 'general' 표기와의 차이는 문서화).
+- **수정/신규 대상**:
+  - `app/storage/space_doc_type_cache.py`(신규) — `SpaceDocTypeCache` ABC + `FakeSpaceDocTypeCache` +
+    `MySQLSpaceDocTypeCache`(sqlalchemy) + `SpaceDocTypeEntry`. db-schema §3.1 정합.
+  - `app/ingestion/document_analyzer.py`(신규 [Agent]) — `DocTypeClassifier` ABC + `FakeDocTypeClassifier`
+    + `OpenAIDocTypeClassifier`(GPT-4o-mini, Function Calling, 타임아웃) + `DocumentAnalyzer.resolve_doc_type`
+    (캐시 우선 → 미스 시 분류 → 캐싱 → 폴백). LLM 호출은 어댑터 경계에 격리(테스트는 Fake).
+  - `app/ingestion/workers/chunking_worker.py`(확장) — `ChunkingWorkerDeps.doc_type_resolver`(optional)
+    추가. 주입 시 `chunk_page(page, resolver.resolve_doc_type(page))`, 미주입 시 기존 라벨 폴백(무변).
+  - `app/storage/__init__.py` export, (`app/config.py` 의 `llm_aux_model`/`openai_api_key`/`mysql_uri` 재사용).
+- **테스트(외부 mock)**: 캐시 미스→분류→캐싱, 캐시 히트 재사용, 저신뢰/예외→OPERATION 폴백,
+  Worker 가 resolver doc_type 으로 청킹. OpenAI·MySQL 은 Fake 로 대체.
+- **완료 기준**: Worker 가 resolver 주입 시 LLM doc_type 으로 청킹 + 스페이스 1회 판별 캐싱. `verify.sh` 통과.
+- **TBD**: 다중 샘플 스페이스 분석(PoC 는 첫 페이지 1샘플), 실 OpenAI/MySQL 부트스트랩 wiring.
+
 ## Milestone D — 데이터 동기화 에이전트 (FR-005)
 
 ### featureI-5: 데이터 동기화 에이전트 — Delta Sync + 3중 삭제 동기화 (FR-005)  ✅ featureI-6 으로 구현(Delta+Reconcile / Trash·Webhook TBD)

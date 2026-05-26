@@ -52,6 +52,8 @@ class ChunkingWorkerDeps:
         cache: ``embedding_cache`` 어댑터(멱등성).
         jobs: ``ingestion_jobs`` 기록 어댑터. None 이면 기록을 생략한다.
         chunk_lookup: ``chunk_lookup`` 어댑터. None 이면 적재를 생략한다(legacy 호환).
+        doc_type_resolver: 문서 분석기[Agent](`DocumentAnalyzer`). 주입 시 스페이스 단위
+            LLM doc_type 으로 청킹하고, None 이면 chunk_page 의 라벨 휴리스틱 폴백을 쓴다.
     """
 
     raw_store: RawPageStore
@@ -61,6 +63,7 @@ class ChunkingWorkerDeps:
     cache: Any
     jobs: IngestionJobsRepository | None = None
     chunk_lookup: Any | None = None
+    doc_type_resolver: Any | None = None
 
 
 @dataclass(slots=True)
@@ -104,7 +107,13 @@ def process_chunking_message(
         _record(deps, page_id, IngestionStatus.INVALID_ACL, started_at, error="ACL missing")
         return ChunkingMessageResult(page_id=page_id, status=IngestionStatus.INVALID_ACL)
 
-    chunks = chunk_page(page)  # doc_type=None → 라벨 휴리스틱 폴백
+    # doc_type: 분석기[Agent] 주입 시 스페이스 단위 LLM 판별, 미주입 시 라벨 휴리스틱 폴백.
+    doc_type = (
+        deps.doc_type_resolver.resolve_doc_type(page)
+        if deps.doc_type_resolver is not None
+        else None
+    )
+    chunks = chunk_page(page, doc_type)
     if not chunks:
         _record(deps, page_id, IngestionStatus.EMPTY_BODY, started_at, error="no chunks")
         return ChunkingMessageResult(page_id=page_id, status=IngestionStatus.EMPTY_BODY)
