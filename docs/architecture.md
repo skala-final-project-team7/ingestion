@@ -47,15 +47,16 @@
 
 | 컴포넌트 | FR | 패키지/모듈 | 상태 |
 |---|---|---|---|
-| Data Ingestion Agent (Full Crawl) | FR-001 | `app/ingestion/crawler.py` | stub (신규 구현) |
-| Data Sync Agent (Delta/삭제) | — | `app/ingestion/sync.py` | Reconciliation 일부 복사 / 확장 필요 |
+| Data Ingestion Agent (Full Crawl) | FR-001 | `data_ingestion_agent/`(vendored) ↔ `app/adapters/atlassian.py` + `app/ingestion/crawler.py` | 통합 완료(featureI-6) |
+| Data Sync Agent (Delta/삭제) | FR-005 | `data_sync_agent/`(vendored) ↔ `app/ingestion/sync.py`(`run_delta_sync`) | 통합 완료(featureI-6) / Reconciliation 복사 유지 |
 | 첨부 텍스트 추출기 | FR-002 | `app/ingestion/extractor/` | stub (신규 구현) |
 | 문서·첨부 분석기 | FR-003 | `app/ingestion/attachment_analyzer.py` | 복사(Pipeline 분석기). 문서 분석기[Agent] 미구현 |
 | Adaptive Chunker | FR-003 | `app/ingestion/chunker/` | 복사 완료 (본문 6유형 + 첨부 3유형) |
 | Dual Embedding | FR-004 | `app/ingestion/embedder/`, `embedding.py` | 복사 완료 |
 | Multi-Pool 색인 | FR-004 | `app/ingestion/vector_store.py`, `indexer.py` | 복사 완료 |
-| RabbitMQ Workers | — | `app/ingestion/workers/` | stub (신규 구현) |
-| 문서 공급원 어댑터 | FR-001 | `app/adapters/` | 복사 (JsonFixture / Atlassian 계약) |
+| RabbitMQ Workers | — | `app/ingestion/workers/` (`publisher.py` 추가) | Queue Publisher 구현 / 큐 소비 Worker 는 후속 |
+| 문서 공급원 어댑터 | FR-001 | `app/adapters/` (`atlassian.py` 구현) | JsonFixture(복사) + Atlassian(vendored 연결, featureI-6) |
+| Raw Store | FR-001 | `app/storage/raw_store.py` | 구현(featureI-6) — `raw_pages`/`raw_attachments` 적재 |
 | 저장소 클라이언트 | — | `app/storage/` | 복사 (Mongo/Qdrant/chunk_lookup/jobs) |
 
 ## 3. 외부 의존성 / 저장소
@@ -73,3 +74,20 @@
 - Qdrant payload 스키마·`embedding_cache` 멱등성 키·ACL 필드(`allowed_groups`/`allowed_users`)는
   RAG의 검색 단계와 **계약을 공유**하므로, 변경 시 양 레포(`docs/db-schema.md`)를 함께 갱신한다.
 - 향후 공통 자산을 공유 패키지로 분리할지 여부는 `docs/ai/current-plan.md`에서 결정한다.
+
+## 5. 외부 에이전트 vendoring (featureI-6)
+
+- Data Ingestion Agent(FR-001)·Data Sync Agent(FR-005)는 별도 레포에서 개발된 독립
+  패키지로, 저장소 루트에 **무수정 vendoring** 한다: `data_ingestion_agent/`,
+  `data_sync_agent/`. 테스트·스크립트는 `tests/<agent>/` 아래에 무수정 배치(pytest 패키지
+  마커 `__init__.py`만 추가). `pyproject.toml` 의 `packages.find.include` 에 노출하고,
+  `[tool.ruff] extend-exclude` / `[tool.mypy] exclude` 로 원본을 lint·typecheck 대상에서 제외한다.
+- ingestion 본체는 vendored 코드를 **직접 호출하지 않고** 얇은 어댑터로만 연결한다:
+  - `app/adapters/atlassian.py` `AtlassianSourceAdapter` → vendored `run_full_crawl_workflow`
+    를 in-process 블랙박스 호출 후 산출 `ProcessedDocument` 를 표준 `PageObject` 로 변환.
+  - `app/ingestion/sync.py` `run_delta_sync` → vendored `run_data_sync_workflow` 를 호출 후
+    `ChangedDocument` 를 `PageObject` 로 변환, 삭제 후보 page_id 집계.
+- vendored 스키마(중첩 space/page/body)와 ingestion 계약(평면 `PageObject`)이 어긋나는 부분
+  (ACL·labels·ancestors·attachments 미산출)은 **어댑터에서 변환·합성**한다(vendored 무수정 보존).
+- 미해결(추측 구현 금지): ACL 실연동, `access_token`/`cloud_id` 전달 경로, 첨부 수집,
+  crawl 단계 `ingestion_jobs` stage(공유 enum). 상세는 `docs/ai/current-plan.md` featureI-6 TBD.

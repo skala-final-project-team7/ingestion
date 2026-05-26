@@ -159,6 +159,35 @@ write 성공 직후 `ChunkTextLookup.upsert_many` 로 단일 배치 적재한다
 어댑터가 적재 시점(UTC)에 자동 부여한다. cache write 이후 단계라 chunk_lookup 적재 실패가
 멱등성 캐시 상태를 오염시키지 않는다.
 
+### 2.6 `raw_pages` (Data Ingestion Agent 수집 원본 — FR-001)
+
+Data Ingestion Agent(Full Crawl) / Data Sync Agent(Delta) 가 수집한 표준 `PageObject` 를
+적재한다. 후속 Chunking Worker 가 `page_id` 로 원본 본문을 조회한다. 적재 어댑터는
+`app/storage/raw_store.py` 의 `RawPageStore`(ABC) / `FakeRawPageStore` / `MongoRawPageStore`.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `page_id` | string (upsert 키) | 문서 식별자. 같은 page_id 재크롤 시 멱등 upsert |
+| `space_key` | string | ACL 1차 키 + 출처 |
+| `title` | string | 페이지 제목 |
+| `body_html` | string | Confluence storage HTML 원문(청커가 파싱) |
+| `version_number` | integer | 재색인 멱등성 비교 키 |
+| `last_modified` | datetime(ISO) | Delta Sync 변경 비교 키 |
+| `allowed_groups` / `allowed_users` | string[] | ACL(PoC: `space_key` 합성 — §1.4 미해결) |
+| `webui_link` | string | 출처 카드 원본 URL |
+| `labels` / `ancestors` / `attachments` | array | 에이전트 MVP 미산출 → 현재 빈 배열(TBD) |
+
+> 적재 본문은 `PageObject.model_dump(mode="json")`. 멱등 upsert(`page_id` 필터)로 재크롤·
+> Delta 재투입이 안전하다. 본문·자격증명은 큐 메시지에 싣지 않고 `page_id` 만 전달한다.
+
+### 2.7 `raw_attachments` (첨부 원본 — FR-001/FR-002)
+
+페이지 첨부의 메타·바이너리 핸들을 `attachment_id` 키로 적재한다(`MongoRawPageStore.
+save_attachment`). **현재 Data Ingestion Agent MVP 는 첨부를 수집하지 않으므로
+(`attachment_processing_status=not_supported_in_mvp`) 본 컬렉션은 비어 있다.** 첨부 수집·
+텍스트 추출은 FR-002(featureI-3)에서 채운다. 필드(예정): `attachment_id`, `filename`,
+`mime_type`, `download_url`, `parent_page_id`, `last_modified`, `extracted_format`.
+
 ---
 
 ## 3. MySQL

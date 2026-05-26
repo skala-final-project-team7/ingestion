@@ -17,12 +17,17 @@ def test_schemas_importable_and_chunk_id_deterministic() -> None:
     assert make_chunk_id("PAGE-1", 1) != a
 
 
-def test_crawler_stub_raises_not_implemented() -> None:
-    """FR-001 Full Crawl 은 아직 stub — featureI-2 에서 구현."""
-    from app.ingestion.crawler import CrawlRequest, run_full_crawl
+def test_crawler_public_contract_available() -> None:
+    """FR-001 Full Crawl 은 featureI-6(vendored Data Ingestion Agent)로 구현됨.
 
-    with pytest.raises(NotImplementedError):
-        run_full_crawl(CrawlRequest(space_key="CPC"))
+    상세 동작은 tests/ingestion/test_crawler.py·tests/adapters/test_atlassian.py 에서 검증.
+    여기서는 공개 계약(CrawlRequest/CrawlResult/run_full_crawl)이 import 가능한지만 확인한다.
+    """
+    from app.ingestion.crawler import CrawlRequest, CrawlResult, run_full_crawl
+
+    assert callable(run_full_crawl)
+    assert CrawlRequest(space_key="CPC").space_key == "CPC"
+    assert CrawlResult(space_key="CPC").pages_collected == 0
 
 
 def test_extractor_stub_raises_not_implemented() -> None:

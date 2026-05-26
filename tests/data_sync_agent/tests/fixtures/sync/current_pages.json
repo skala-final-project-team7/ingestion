@@ -1,0 +1,52 @@
+{
+  "space-fixture": [
+    {
+      "_links": {
+        "webui": "https://example.invalid/wiki/pages/new-page"
+      },
+      "id": "new-page",
+      "status": "current",
+      "title": "Synthetic New Page",
+      "version": {
+        "createdAt": "2026-05-15T01:00:00Z",
+        "number": 1
+      }
+    },
+    {
+      "_links": {
+        "webui": "https://example.invalid/wiki/pages/updated-page"
+      },
+      "id": "updated-page",
+      "status": "current",
+      "title": "Synthetic Updated Page",
+      "version": {
+        "createdAt": "2026-05-15T02:00:00Z",
+        "number": 2
+      }
+    },
+    {
+      "_links": {
+        "webui": "https://example.invalid/wiki/pages/unchanged-page"
+      },
+      "id": "unchanged-page",
+      "status": "current",
+      "title": "Synthetic Unchanged Page",
+      "version": {
+        "createdAt": "2026-05-15T00:00:00Z",
+        "number": 1
+      }
+    },
+    {
+      "_links": {
+        "webui": "https://example.invalid/wiki/pages/unsupported-page"
+      },
+      "id": "unsupported-page",
+      "status": "current",
+      "title": "Synthetic Unsupported Content Page",
+      "version": {
+        "createdAt": "2026-05-15T01:30:00Z",
+        "number": 1
+      }
+    }
+  ]
+}
