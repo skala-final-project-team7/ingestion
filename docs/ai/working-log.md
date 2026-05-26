@@ -5,6 +5,80 @@
 
 ---
 
+## 2026-05-26 — ADR 0003 항목 3 적용: IngestionStage.CRAWL 추가 + crawl 잡 기록 (승인됨)
+
+**작업**: ADR 0003 항목 3(승인 필요로 보류했던 항목)을 사용자 승인 후 적용. 공유 enum
+`IngestionStage`에 수집 단계 값을 추가하고 ingestion crawl 단계 `ingestion_jobs` 기록을 배선.
+
+**변경(공유 자산 — 양 레포 동시·바이트 동일)**
+
+- `app/schemas/enums.py`: `IngestionStage`에 `CRAWL = "crawl"` 추가(파이프라인 순서상 ANALYZE 앞).
+  owning source인 rag를 먼저 수정하고 ingestion에 동일 미러 — `diff`로 바이트 동일 확인.
+
+**변경(레포 전용)**
+
+- (ingestion) `app/ingestion/crawler.py`: `run_full_crawl`에 `jobs: IngestionJobsRepository | None
+  = None` 추가. 주입 시 적재·발행에 성공한 페이지마다 `IngestionStage.CRAWL` + `IngestionStatus.
+  SUCCESS` 기록(비파괴 — 미주입이면 기존 동작). 실패 페이지는 적합한 status 코드가 없어
+  `failed_page_ids`로만 격리(잡 레코드 미기록). `datetime.now(UTC)` 사용(기존 chunking_worker 정합).
+- (ingestion) `tests/ingestion/test_crawler.py`: jobs 주입 시 CRAWL SUCCESS 기록 / 실패 페이지 미기록
+  테스트 2건 추가.
+- (rag) `tests/schemas/test_enums.py`: `IngestionStage` 멤버셋에 `crawl` 추가(기존 동치 assert 갱신).
+- 양 레포 `docs/db-schema.md` §2.3 `stage` 설명에 `crawl` 반영, `docs/adr/0003` 항목 3 상태를
+  "적용됨"으로 갱신.
+
+**영향/주의**: 공유 enum 변경이므로 **양 레포를 함께 배포**해야 한다. ingestion이 `"crawl"`을 기록한
+`ingestion_jobs` 레코드를, enum 미갱신 레포(또는 대시보드)가 `IngestionStage(value)`로 역파싱하면
+`ValueError`가 날 수 있다(ADR 0003 항목 3 영향). 관리자 대시보드는 별도 시스템 — stage 화이트리스트
+확인 권장.
+
+**검증**: 샌드박스(Python 3.10)는 StrEnum/venv 부재로 pytest 불가 → ruff(line-length 100, 통과) +
+py_compile(통과)까지 수행. **전체 `./scripts/verify.sh`(format→lint→test)는 양 레포 Mac(3.11)에서
+수행 필요**(특히 rag test_enums, ingestion test_crawler).
+
+**후속**: ADR 0003 항목 4(soft_delete)는 별도 change-set로 이어서 진행. crawl 잡 기록의 실 배선
+(bootstrap에서 `jobs` 주입)은 운영 wiring 시 연결.
+
+---
+
+## 2026-05-26 — ingestion↔rag 공유 계약 합의 (ADR 0003)
+
+**작업**: ingestion·rag 두 레포가 공유하는 미해결 계약(TBD)을 식별·결정하고 ADR로 동결. 결정 결과를
+양 레포 `docs/adr/0003`에 **동일 복제**하고 관련 문서를 정합 갱신. 코드 diff로 공유 자산 분기 현황을
+직접 검증(추측 금지).
+
+**검증한 현황(diff/grep)**
+
+- 공유 자산(`app/schemas/*`, `vector_store`, `indexer`, `embedding`, `qdrant_client`, `jobs`,
+  `mongo_cache`, `adapters/{base,json_fixture}`)은 rag와 **바이트 동일**. 유일 분기 = `sync.py`
+  (본 레포가 `run_delta_sync` additive 추가, 공유 `reconcile_deletions`는 동일).
+- `chunk_id=SHA1("{page_id}:{chunk_index}:{attachment_id}")`, cache 키=`(chunk_id, version_number)`,
+  payload=`build_point_payload` — 양 레포 동일. rag 검색에 soft-delete 필터 없음(grep 확인).
+
+**결정(상세는 ADR 0003)**
+
+- **항목 1 ACL: (A) `space_key` 합성 확정**(ADR 0002 `space:` prefix 전제). seam =
+  `synthesize_space_acl`/`_synthesize_acl`(본 레포) ↔ rag `build_acl_filter`. 런타임 무변.
+- **항목 2 payload/cache/chunk_id: owning=rag**, 변경 시 양 레포 동시 + 재색인. 분기 등록부 기록.
+- **항목 3 `IngestionStage`에 `CRAWL` 추가: 제안만 — 승인 필요**(공유 enum, 동시 배포 필요). crawl 잡
+  기록 보류 현행 유지. enum 코드 미변경.
+- **항목 4 soft_delete: PoC는 hard delete 유지**. 도입 규약(payload `is_deleted`+검색 `must_not`+재색인)
+  만 기록 — **승인 필요**. `sync.py`의 `deleted_candidate` surface(미파괴)는 현행 유지.
+- **항목 5 공유 자산: 복사 유지**, 분리는 분기 비용 증가 시 재검토.
+- **합의 불필요**: `access_token`/`cloudId` 전달(Auth/BFF — 두 레포에 코드 없음), JWT 발급·서명,
+  관리자 대시보드 데이터.
+
+**수정 파일**: `docs/adr/0003-ingestion-rag-shared-contracts.md`(신규), `docs/db-schema.md`(§1.4 ACL·
+§2.3 stage 노트), `docs/atlassian-api.md`(ACL 절 "미해결"→"결정"), 본 `working-log.md`.
+**런타임 코드·공유 자산(schemas/enums/vector_store 등) 미변경** — 문서/거버넌스 정합만.
+
+**검증**: 문서 전용 변경이라 코드/테스트 무영향. `git diff`로 `docs/` 한정 확인. 비밀정보 미포함.
+
+**후속(승인 대기)**: 항목 3(enum `CRAWL`)·항목 4(soft_delete)는 사람 승인 후 별도 change-set로
+양 레포 동시 적용. 영향·절차는 ADR 0003 "사람 승인이 필요한 항목 요약" 표 참조.
+
+---
+
 ## 2026-05-26 — featureI-6: 외부 에이전트 2종 vendoring 통합 (FR-001 / FR-005)
 
 **작업**: 별도 레포에서 개발된 Data Ingestion Agent·Data Sync Agent 두 패키지를 ingestion

@@ -81,18 +81,20 @@ payload 필드로 복원한다.
 검색 시 ACL 필터는 `@enforce_acl` 데코레이터에서 항상 `AND`로 주입된다. ACL 조건이 빠진 검색
 호출은 `ACLViolationError`로 거부된다. 상세는 `docs/rag-pipeline-design.md` §6.
 
-> **⚠ ACL 필드 모델 미해결** — 설계서·기획서 §6.6은 ACL을 청크별 `allowed_groups`/`allowed_users`
-> Payload로 정의한다. 그러나 제공된 Atlassian API 명세에는 페이지 단위 권한(content restrictions)
-> API가 없고 **Space 단위 권한(`DATA-03` — 사용자가 접근 가능한 Space 목록)만** 존재하며,
-> 기획서 §6.2/§6.5도 Authorization Server가 수집하는 ACL을 '스페이스 접근 권한'으로 기술한다.
-> `samples/confluence_sample_data.json`에도 ACL 필드가 없다.
+> **✓ ACL 필드 모델 — PoC 결정: 대안 (A) `space_key` 합성** (ingestion↔rag 합의, **ADR 0003** 참조).
+> 설계서·기획서 §6.6은 ACL을 청크별 `allowed_groups`/`allowed_users` Payload로 정의하나, 제공된
+> Atlassian API 명세에는 페이지 단위 권한(content restrictions) API가 없고 **Space 단위 권한
+> (`DATA-03` — 사용자가 접근 가능한 Space 목록)만** 존재한다(기획서 §6.2/§6.5도 ACL을 '스페이스
+> 접근 권한'으로 기술, 샘플 데이터에도 ACL 필드 없음). 따라서 PoC는 아래 (A)로 확정한다.
 >
-> PoC ACL Pre-filtering 방식은 다음 중 팀 결정이 필요하다:
-> - **(A) `space_key` 기반** — `DATA-03`으로 사용자 접근 가능 스페이스를 얻어 `space_key IN [...]` 필터. 즉시 구현 가능, 입도(granularity)는 스페이스 단위.
-> - **(B) `allowed_groups`/`allowed_users` 기반** — Confluence content restrictions API를 추가 도입해 페이지별 ACL을 Ingestion 시 수집. 설계서 원안이나 API 명세 외 작업 필요.
+> - **(A) `space_key` 기반 — 채택.** 수집 시 `allowed_groups`를 `["space:{space_key}"]`로 합성하고
+>   (`_synthesize_acl`/`synthesize_space_acl`), 검색 시 `app/query/acl.py:build_acl_filter`가 JWT
+>   `groups`(`space:{key}` 형식 — ADR 0002)를 `allowed_groups`에 OR 매칭한다. 입도는 스페이스 단위.
+> - **(B) `allowed_groups`/`allowed_users`(페이지별) — 보류.** Confluence content restrictions API
+>   추가 도입 필요(명세 외). 도입 시 `build_acl_filter`/`_synthesize_acl`만 교체 + 재색인, 별도 ADR.
 >
-> 결정 전까지 Payload는 두 모델을 모두 수용할 수 있도록 `space_key` + `allowed_groups` +
-> `allowed_users`를 모두 인덱싱한다. `app/query/acl.py`는 결정에 따라 필터 생성 로직만 교체한다.
+> 모델 교체 여지 보존을 위해 Payload는 `space_key` + `allowed_groups` + `allowed_users`를 **모두
+> 인덱싱**한 채로 둔다. 검색 필터 생성은 `app/query/acl.py`에 격리돼 결정에 따라 그 함수만 교체한다.
 
 ---
 
@@ -115,7 +117,7 @@ payload 필드로 복원한다.
 |---|---|---|
 | `page_id` | string | 대상 페이지 |
 | `attachment_id` | string \| null | 대상 첨부 (본문 잡은 null) |
-| `stage` | string | `analyze` / `chunk` / `embed` / `upsert` / `sync` |
+| `stage` | string | `crawl` / `analyze` / `chunk` / `embed` / `upsert` / `sync` (`IngestionStage` enum). `crawl` 은 수집 단계로 **ADR 0003 항목 3**으로 추가됨(ingestion↔rag 공유 enum, 양 레포 동시 갱신). ingestion `crawler.run_full_crawl` 가 `jobs` 주입 시 페이지별 CRAWL SUCCESS 를 기록한다 |
 | `status` | string | 정상 또는 예외 코드 (`PARTIAL_PARSE`, `INVALID_ACL`, `ATTACH_ENCRYPTED`, `UNSUPPORTED_ATTACH_TYPE`, `LOW_QUALITY_ATTACH`, `ATTACH_NO_HEADER`, `OVERSIZE_ATOMIC`, `TOKENIZER_FAIL` 등 — `docs/chunking-strategy.md` §8) |
 | `started_at` / `finished_at` | datetime | 처리 구간 |
 | `error` | string \| null | 실패 상세 |

@@ -133,6 +133,41 @@ RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통
 
 ---
 
+## Git 커밋·푸시 규칙
+
+> 이 레포(`ingestion`)와 `../rag`는 **독립된 git 저장소(형제 관계)** 다. 커밋·푸시는 **각 레포에서
+> 따로** 수행한다. 한 작업이 두 레포를 모두 건드리면, 같은 change-set를 각 레포에서 개별 브랜치·
+> 개별 커밋·개별 푸시로 처리한다(한쪽 커밋이 다른 쪽을 포함하지 않는다).
+
+- **커밋·푸시는 사용자가 수행한다.** Claude는 브랜치명·커밋 메시지 **초안만 제안**하고, `git commit`/
+  `git push`를 임의로 실행하지 않는다.
+- **브랜치 분리**: change-set마다 전용 브랜치를 만든다. 형식 `<type>/#<이슈번호>/<기능-이름>`
+  (`type` = `feat` / `fix` / `docs` / `refactor`). 다른 작업 브랜치 위에 새 change-set를 쌓지 않는다.
+- **커밋 전 검증**: `./scripts/verify.sh`(format → lint → test)를 통과시킨다. 문서만 변경한
+  change-set도 실행해 무영향을 확인한다. 실패 시 원인·해결 여부를 작업 결과에 기록한다.
+- **스테이징 확인**: `git add -A` 전에 `git status --short`로 의도한 파일만 변경됐는지 확인한다
+  (`git diff`로 의도하지 않은 변경이 없는지도 본다).
+- **비밀정보 금지**: 토큰·자격증명·`.env`가 스테이징/커밋에 포함되지 않았는지 확인한다(절대 규칙).
+- **공유 자산 변경 동기화**: `app/schemas`·`app/ingestion/{chunker,embedder,...}`·`app/adapters`·
+  `app/storage` 등 `../rag`와 공유하는 자산을 바꾸면, 같은 change-set로 양 레포를 동일하게 갱신하고
+  ADR로 기록한다(소유권·동기화 절차는 `docs/adr/0003-ingestion-rag-shared-contracts.md` 항목 2 참조).
+- **커밋 메시지**: 제목 한 줄(`<type>(<scope>): <요약>`) + 빈 줄 + 본문 bullet(무엇을·왜). 예시는 아래.
+
+```bash
+# 예시 — change-set 단위 (이 레포에서 단독 수행)
+git checkout -b feat/#<이슈번호>/<기능-이름>
+./scripts/verify.sh                 # format → lint → test 통과
+git status --short                  # 의도한 파일만 확인
+git add -A
+git commit -m "feat(ingestion): <요약>
+
+- <무엇을 했는지>
+- <왜 / 영향>"
+git push --set-upstream origin feat/#<이슈번호>/<기능-이름>
+```
+
+---
+
 ## 세션 운영 원칙
 
 - 1 change-set = 1 session을 원칙으로 한다.
