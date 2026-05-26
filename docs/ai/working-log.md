@@ -92,3 +92,37 @@ ACL/빈 본문 게이트·잡 기록·end-to-end 를 Fake(임베더/Qdrant/cache
 **후속(TBD)**: featureI-4b(GPT-4o-mini 문서 분석기 + space_doc_type_cache), 첨부 청크 경로
 (FR-002 첨부 입력 생성 후), 실 어댑터 부트스트랩 + pika consumer 배포 wiring, `content.embedding`
 2-Worker 분리(운영 스케일링 시).
+
+---
+
+## 2026-05-26 — featureI-4b: 문서 분석기 [Agent] + MySQL space_doc_type_cache (FR-003)
+
+**작업**: featureI-4 의 라벨 휴리스틱 폴백을 대체해, 스페이스 단위 1회 GPT-4o-mini doc_type
+판별 → MySQL `space_doc_type_cache` 캐싱 → 이후 같은 스페이스 페이지는 캐시 재사용. Chunking
+Worker 에 optional resolver 로 연결.
+
+**결정**
+
+- **LLM 격리(Agent)**: `DocTypeClassifier` ABC + `FakeDocTypeClassifier` + `OpenAIDocTypeClassifier`
+  (GPT-4o-mini, **Function Calling 으로 스키마 강제**, 타임아웃). 비결정론 LLM 을 어댑터 경계에
+  격리해 테스트는 Fake 로 대체(app/CLAUDE.md §5).
+- **폴백**: 신뢰도 < 0.6 또는 LLM 실패 시 `DocType.OPERATION`. DocType enum 에 'general' 이 없어
+  (chunker 폴백·db-schema confidence 주석과 정합) operation 사용 — CLAUDE.md §FR-003 의 'general'
+  표기와의 차이는 본 로그에 명시. **저신뢰는 캐싱**(반복 호출 방지), **일시적 LLM 실패는 미캐싱**
+  (다음 페이지 재시도).
+- **스페이스 1회 판별**: 캐시 우선. 미스 시 현재 페이지 1샘플(title+labels+body 일부)로 분류 후
+  캐싱(sample_count=1). 다중 샘플 스페이스 분석은 TBD.
+- **Worker 연동(비파괴)**: `ChunkingWorkerDeps.doc_type_resolver`(optional) 추가. 주입 시
+  `chunk_page(page, resolver.resolve_doc_type(page))`, 미주입 시 기존 라벨 폴백 — featureI-4 동작 무변.
+
+**신규/수정 파일**: `app/storage/space_doc_type_cache.py`(ABC+Fake+MySQL, db-schema §3.1),
+`app/ingestion/document_analyzer.py`(분석기[Agent]), `app/ingestion/workers/chunking_worker.py`
+(resolver 연동), `app/storage/__init__.py`(export), `tests/ingestion/test_document_analyzer.py`,
+`docs/architecture.md`·`docs/ai/current-plan.md`.
+
+**검증**: ruff check/format + mypy app(43 files) 통과. 캐시 미스→분류→캐싱, 캐시 히트 재사용(LLM
+재호출 없음), 저신뢰/예외→OPERATION 폴백, Worker 가 resolver doc_type(incident)으로 청킹을 Fake 로
+테스트. 전체 pytest·verify.sh·push 는 Mac(3.11).
+
+**후속(TBD)**: 다중 샘플 스페이스 분석, 실 OpenAI/MySQL 부트스트랩 + Worker 에 resolver 주입 배포
+wiring, 첨부 분석기(attachment_analyzer) 연동(FR-002 이후).

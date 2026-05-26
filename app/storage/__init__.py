@@ -44,6 +44,12 @@ from app.storage.raw_store import (
     MongoRawPageStore,
     RawPageStore,
 )
+from app.storage.space_doc_type_cache import (
+    FakeSpaceDocTypeCache,
+    MySQLSpaceDocTypeCache,
+    SpaceDocTypeCache,
+    SpaceDocTypeEntry,
+)
 
 __all__ = [
     "ChunkLookupRecord",
@@ -54,13 +60,17 @@ __all__ = [
     "FakeEmbeddingCache",
     "FakeIngestionJobsRepository",
     "FakeRawPageStore",
+    "FakeSpaceDocTypeCache",
     "IngestionJobRecord",
     "IngestionJobsRepository",
     "MongoChunkTextLookup",
     "MongoEmbeddingCache",
     "MongoIngestionJobsRepository",
     "MongoRawPageStore",
+    "MySQLSpaceDocTypeCache",
     "QdrantPoolStore",
     "RawPageStore",
     "SearchHit",
+    "SpaceDocTypeCache",
+    "SpaceDocTypeEntry",
 ]

@@ -50,7 +50,7 @@
 | Data Ingestion Agent (Full Crawl) | FR-001 | `data_ingestion_agent/`(vendored) ↔ `app/adapters/atlassian.py` + `app/ingestion/crawler.py` | 통합 완료(featureI-6) |
 | Data Sync Agent (Delta/삭제) | FR-005 | `data_sync_agent/`(vendored) ↔ `app/ingestion/sync.py`(`run_delta_sync`) | 통합 완료(featureI-6) / Reconciliation 복사 유지 |
 | 첨부 텍스트 추출기 | FR-002 | `app/ingestion/extractor/` | stub (신규 구현) |
-| 문서·첨부 분석기 | FR-003 | `app/ingestion/attachment_analyzer.py` | 복사(Pipeline 분석기). 문서 분석기[Agent] 미구현 |
+| 문서·첨부 분석기 | FR-003 | `app/ingestion/document_analyzer.py`(신규 [Agent]) · `attachment_analyzer.py`(복사 Pipeline) | 문서 분석기[Agent] 구현(featureI-4b, GPT-4o-mini+캐싱). 첨부 분석기 복사 |
 | Adaptive Chunker | FR-003 | `app/ingestion/chunker/` | 복사 완료 (본문 6유형 + 첨부 3유형) |
 | Dual Embedding | FR-004 | `app/ingestion/embedder/`, `embedding.py` | 복사 완료 |
 | Multi-Pool 색인 | FR-004 | `app/ingestion/vector_store.py`, `indexer.py` | 복사 완료 |
