@@ -4,8 +4,6 @@
 실행 전 의존성 설치 필요: ``pip install -e ".[ingestion,embedding,dev]"`` (Python 3.11).
 """
 
-import pytest
-
 
 def test_schemas_importable_and_chunk_id_deterministic() -> None:
     """공유 스키마(복사 자산)가 import 되고 make_chunk_id 가 결정론적이다."""
@@ -30,15 +28,22 @@ def test_crawler_public_contract_available() -> None:
     assert CrawlResult(space_key="CPC").pages_collected == 0
 
 
-def test_extractor_stub_raises_not_implemented() -> None:
-    """FR-002 첨부 텍스트 추출기는 아직 stub — featureI-3 에서 구현."""
-    from app.ingestion.extractor import extract_attachment_text
+def test_extractor_implemented_contract() -> None:
+    """FR-002 첨부 추출기는 featureI-3 에서 구현됨(CSV 는 stdlib 만 사용 — 외부 의존성 불필요).
+
+    유형별 상세는 tests/ingestion/test_attachment_extractor.py 에서 검증.
+    """
+    from app.ingestion.extractor import ExtractionResult, extract_attachment_text
     from app.schemas.enums import AttachmentType
 
-    with pytest.raises(NotImplementedError):
-        extract_attachment_text(
-            attachment_id="att-1", attachment_type=AttachmentType.PDF, content=b""
-        )
+    result = extract_attachment_text(
+        attachment_id="att-1",
+        attachment_type=AttachmentType.CSV,
+        content=b"region,sales\nKR,100\n",
+    )
+    assert isinstance(result, ExtractionResult)
+    assert result.ok is True
+    assert "region: KR, sales: 100" in result.text
 
 
 def test_worker_queue_names_defined() -> None:
