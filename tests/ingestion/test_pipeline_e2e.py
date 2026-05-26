@@ -18,7 +18,7 @@ from app.ingestion.pipeline import (
 )
 from app.ingestion.vector_store import CONTENT_POOL, POOL_NAMES
 from app.ingestion.workers.publisher import FakeQueuePublisher
-from app.schemas.enums import IngestionStatus
+from app.schemas.enums import IngestionStage, IngestionStatus
 from app.schemas.page_object import PageObject
 
 
@@ -68,6 +68,19 @@ def test_end_to_end_crawl_to_qdrant_upsert() -> None:
     for pool in POOL_NAMES:
         assert len(components.store.points[pool]) >= 2
     assert components.store.scroll_page_ids() == {"page-1", "page-2"}
+
+
+def test_end_to_end_records_crawl_and_upsert_jobs_in_shared_repo() -> None:
+    # crawl(CRAWL)·worker(UPSERT)가 동일 jobs 인스턴스에 함께 기록한다 (ADR 0003 항목 3 wiring).
+    source = _FakeSource([_page("page-1"), _page("page-2")])
+
+    _result, components = run_poc_ingestion(CrawlRequest(space_key="ENG"), source)
+
+    crawl_records = [r for r in components.jobs.records if r.stage is IngestionStage.CRAWL]
+    assert {r.page_id for r in crawl_records} == {"page-1", "page-2"}
+    assert all(r.status is IngestionStatus.SUCCESS for r in crawl_records)
+    # 같은 jobs 인스턴스에 색인 단계 UPSERT 도 함께 남는다.
+    assert any(r.stage is IngestionStage.UPSERT for r in components.jobs.records)
 
 
 def test_end_to_end_is_idempotent_on_rerun() -> None:

@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-05-26 — ADR 0003 항목 3 운영 wiring: crawl 잡 기록 연결 (ingestion 단독)
+
+**작업**: 항목 3에서 `crawler.run_full_crawl`에 optional `jobs` 주입을 추가했으나, in-process
+조립(`pipeline.py`)에서는 crawl 에 jobs 가 연결되지 않아 CRAWL 잡이 실제로 기록되지 않았다.
+crawl 과 chunking_worker 가 **동일 jobs 인스턴스를 공유**하도록 연결해 한 `ingestion_jobs` 에
+CRAWL(페이지별) + UPSERT 가 함께 남도록 했다.
+
+**변경(ingestion 단독 — 공유 자산·rag 무변경)**
+
+- `app/ingestion/pipeline.py`:
+  - `run_ingestion_pipeline` 이 `run_full_crawl(..., jobs=chunking_deps.jobs)` 로 호출 — crawl 과
+    worker 가 같은 jobs 인스턴스 공유(비파괴: jobs None 이면 양쪽 모두 기록 생략).
+  - `build_poc_components` 가 `FakeIngestionJobsRepository` 를 생성해 `ChunkingWorkerDeps.jobs` 에
+    주입하고 `PocComponents.jobs` 로 노출(이전엔 jobs 미주입 → None 이라 PoC 에서 기록 안 됨).
+- `tests/ingestion/test_pipeline_e2e.py`: PoC 전 체인 실행 후 공유 jobs 에 CRAWL(페이지별 SUCCESS)
+  + UPSERT 가 함께 기록되는지 검증하는 테스트 추가.
+
+**범위 메모**: 실 운영 경로(`bootstrap.build_chunking_worker_deps` 의 Mongo jobs)는 RabbitMQ consumer
+실행 loop(featureI-7c, 인프라 의존 TBD)에서 동일하게 `run_full_crawl(jobs=deps.jobs)` 로 연결하면
+된다 — 본 change-set 은 in-process 조립(PoC/테스트) wiring 까지다.
+
+**검증**: ruff(line-length 100, 통과) + py_compile(통과). 전체 `./scripts/verify.sh` 는 Mac(3.11).
+공유 자산 무변경이라 rag 영향 없음(ingestion 단독 커밋).
+
+---
+
 ## 2026-05-26 — ADR 0003 항목 4 적용: soft_delete 도입 (승인됨)
 
 **작업**: ADR 0003 항목 4(승인 필요로 보류했던 항목)를 사용자 승인 후 적용. Qdrant payload에
