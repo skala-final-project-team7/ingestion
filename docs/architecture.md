@@ -1,0 +1,75 @@
+# Data Ingestion Pipeline — 아키텍처
+
+척척학사(LINA) RAG 챗봇의 **데이터 수집 파이프라인**. Confluence 문서·첨부를 수집해
+첨부 텍스트 추출 → Adaptive Chunking → Dual Embedding 색인까지 수행하고, 변경/삭제를 주기적으로
+동기화한다. RAG Pipeline(질의/응답, `../rag`)과 **분리된 독립 배포 단위**이며, 사용자 요청 트래픽과
+격리된 RabbitMQ 기반 비동기 파이프라인으로 동작한다.
+
+근거: 요구사항정의서 §2.0(Multi-Agent)·§2.2(FR-001~004)·§3(데이터 요구사항), 아키텍처 다이어그램(07).
+
+---
+
+## 1. 구성 요소
+
+```
+                 ┌─────────────── Confluence (Atlassian REST) ───────────────┐
+                 │                                                            │
+   (관리자/스케줄러 트리거)                                            (Delta 1시간 / Webhook / 주1회 Reconciliation)
+                 ▼                                                            ▼
+        ⑤ Data Ingestion Agent (FR-001)                          ⑥ Data Sync Agent
+        Full Crawl: Space→homepage→descendants                    변경·삭제 페이지 식별
+        본문·첨부(PDF/Word/Excel)·메타·ACL 수집                     → 재수집 / chunk 재생성 / upsert
+                 │  raw_pages / raw_attachments (MongoDB)          삭제 3중 전략(Trash/Webhook/Reconcile)
+                 ▼
+        [RabbitMQ] Ingestion Queue
+                 │
+                 ▼
+        첨부 텍스트 추출기 (FR-002)  ── attachment_texts (MongoDB)
+        PDF/Word/Excel → 텍스트(이미지·도형 제외)
+                 │  [RabbitMQ] Chunking Queue
+                 ▼
+        Adaptive Chunker (FR-003)  ── 문서 분석기(Agent) + Adaptive Chunker(Pipeline)
+        본문 6유형(장애/운영/FAQ/회의록/ADR/트러블슈팅) + 첨부 3유형
+                 │  [RabbitMQ] Embedding Queue
+                 ▼
+        Dual Embedding 색인 (FR-004)
+        Dense(multilingual-e5-large 1024d) + Sparse(BM25)
+                 │
+                 ▼
+        Qdrant Multi-Pool (Title / Content / Label)  +  embedding_cache (MongoDB, 멱등성)
+```
+
+- 각 단계 Worker(Ingestion / Attachment Extractor / Chunking / Embedding)는 EKS에서 독립 스케일링한다.
+- RabbitMQ는 Quorum Queue 권장. 실패 페이지/첨부는 재시도 또는 DLQ 보류.
+- 잡 진행/결과는 MongoDB `import_jobs`(또는 `ingestion_jobs`)에 단계별 상태로 기록한다.
+
+## 2. 패키지 매핑
+
+| 컴포넌트 | FR | 패키지/모듈 | 상태 |
+|---|---|---|---|
+| Data Ingestion Agent (Full Crawl) | FR-001 | `app/ingestion/crawler.py` | stub (신규 구현) |
+| Data Sync Agent (Delta/삭제) | — | `app/ingestion/sync.py` | Reconciliation 일부 복사 / 확장 필요 |
+| 첨부 텍스트 추출기 | FR-002 | `app/ingestion/extractor/` | stub (신규 구현) |
+| 문서·첨부 분석기 | FR-003 | `app/ingestion/attachment_analyzer.py` | 복사(Pipeline 분석기). 문서 분석기[Agent] 미구현 |
+| Adaptive Chunker | FR-003 | `app/ingestion/chunker/` | 복사 완료 (본문 6유형 + 첨부 3유형) |
+| Dual Embedding | FR-004 | `app/ingestion/embedder/`, `embedding.py` | 복사 완료 |
+| Multi-Pool 색인 | FR-004 | `app/ingestion/vector_store.py`, `indexer.py` | 복사 완료 |
+| RabbitMQ Workers | — | `app/ingestion/workers/` | stub (신규 구현) |
+| 문서 공급원 어댑터 | FR-001 | `app/adapters/` | 복사 (JsonFixture / Atlassian 계약) |
+| 저장소 클라이언트 | — | `app/storage/` | 복사 (Mongo/Qdrant/chunk_lookup/jobs) |
+
+## 3. 외부 의존성 / 저장소
+
+- **Confluence (Atlassian REST)**: Page/첨부/ACL 수집. 토큰은 수집 단계에서만 사용하며 로그·메시지에 미수집.
+- **RabbitMQ**: Ingestion / Attachment / Chunking / Embedding 큐(라우팅 키 기반).
+- **MongoDB**: `raw_pages`, `raw_attachments`, `attachment_texts`, `import_jobs`, `embedding_cache`, `audit_logs`.
+- **MySQL**: `space_doc_type_cache`(문서 분석기 캐싱).
+- **Qdrant**: Multi-Pool(Title/Content/Label) Named Vector Collection.
+
+## 4. RAG 레포와의 경계 / 공유 자산
+
+- `app/schemas`(PageObject/Chunk/enums), `app/ingestion/chunker`·`embedder`·`embedding.py`·
+  `vector_store.py`·`indexer.py`, `app/adapters`, `app/storage` 는 RAG 레포에서 **복사**한 자산이다.
+- Qdrant payload 스키마·`embedding_cache` 멱등성 키·ACL 필드(`allowed_groups`/`allowed_users`)는
+  RAG의 검색 단계와 **계약을 공유**하므로, 변경 시 양 레포(`docs/db-schema.md`)를 함께 갱신한다.
+- 향후 공통 자산을 공유 패키지로 분리할지 여부는 `docs/ai/current-plan.md`에서 결정한다.
