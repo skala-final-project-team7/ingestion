@@ -235,6 +235,28 @@
 - **완료 기준**: Worker 가 resolver 주입 시 LLM doc_type 으로 청킹 + 스페이스 1회 판별 캐싱. `verify.sh` 통과.
 - **TBD**: 다중 샘플 스페이스 분석(PoC 는 첫 페이지 1샘플), 실 OpenAI/MySQL 부트스트랩 wiring.
 
+### featureI-7: 파이프라인 조립(composition) + in-process end-to-end PoC  📋 진행 중
+
+- **작업 목표**: featureI-6(crawl→raw_pages→`content.chunking`)·featureI-4(chunking_worker→Qdrant)로
+  나뉜 두 절반을 **하나의 시스템으로 in-process 조립**해 end-to-end 동작을 검증한다. 운영은 큐로
+  분리된 독립 Worker 지만, PoC/로컬/통합 테스트는 in-process 합성으로 전체 흐름을 확인한다.
+- **브랜치**: `feat/#10/pipeline-composition`.
+- **수정/신규**:
+  - `app/storage/qdrant_fake.py`(신규) — `FakeQdrantPoolStore`(in-memory). `upsert_chunks_batch`/
+    `scroll_page_ids`/`scroll_attachment_ids`/`delete_by_page_id`/`delete_by_attachment_id`/
+    `delete_by_chunk_id` 구현(indexer·reconcile 인터페이스 호환). **공유 `qdrant_client.py` 무수정**
+    (additive — 새 모듈). rag 설계의 "Fake everything" PoC 모드 enabler.
+  - `app/ingestion/pipeline.py`(신규) — `run_ingestion_pipeline(request, *, source, raw_store,
+    publisher, chunking_deps)`: crawl 실행 → 발행된 `content.chunking` 메시지를 worker 로 drain →
+    `PipelineResult`. `build_poc_components`(all-fakes, raw_store 공유) + `run_poc_ingestion` 편의 함수.
+  - `app/storage/__init__.py` export.
+- **테스트**: fake source(또는 fixture) → crawl → raw_pages 적재 → publish → chunking_worker →
+  `FakeQdrantPoolStore` upsert 를 **전 체인** 검증. 재실행 멱등성(캐시 skip), ACL 누락 페이지 전파 차단.
+- **완료 기준**: 전 체인 end-to-end 테스트 통과 + `verify.sh`. 운영 합성(real adapters + pika consumer
+  loop)은 featureI-7b TBD 로 명시.
+- **TBD(후속 featureI-7b)**: 실 어댑터(E5/BM25/Qdrant/Mongo from_settings) 부트스트랩 + pika consumer
+  실행 loop + CLI 엔트리포인트(인프라 의존 — 통합 환경에서 검증).
+
 ## Milestone D — 데이터 동기화 에이전트 (FR-005)
 
 ### featureI-5: 데이터 동기화 에이전트 — Delta Sync + 3중 삭제 동기화 (FR-005)  ✅ featureI-6 으로 구현(Delta+Reconcile / Trash·Webhook TBD)

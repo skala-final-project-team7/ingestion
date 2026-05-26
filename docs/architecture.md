@@ -56,7 +56,9 @@
 | Multi-Pool 색인 | FR-004 | `app/ingestion/vector_store.py`, `indexer.py` | 복사 완료 |
 | RabbitMQ Workers | — | `app/ingestion/workers/` (`publisher.py`·`consumer.py`·`chunking_worker.py`) | Publisher/Consumer + Chunking+Embedding Worker(featureI-4, 단일 토폴로지) 구현 |
 | 문서 공급원 어댑터 | FR-001 | `app/adapters/` (`atlassian.py` 구현) | JsonFixture(복사) + Atlassian(vendored 연결, featureI-6) |
-| Raw Store | FR-001 | `app/storage/raw_store.py` | 구현(featureI-6) — `raw_pages`/`raw_attachments` 적재 |
+| Raw Store | FR-001 | `app/storage/raw_store.py` | 구현(featureI-6) — `raw_pages`/`raw_attachments` 적재 + `get_page` 조회 |
+| 파이프라인 조립(PoC) | — | `app/ingestion/pipeline.py` | in-process crawl→chunk→index 합성(featureI-7). **운영은 큐로 분리** |
+| Fake Qdrant(PoC/테스트) | — | `app/storage/qdrant_fake.py` | `FakeQdrantPoolStore`(featureI-7) — 외부 Qdrant 없이 적재·삭제동기화 검증 |
 | 저장소 클라이언트 | — | `app/storage/` | 복사 (Mongo/Qdrant/chunk_lookup/jobs) |
 
 ## 3. 외부 의존성 / 저장소
