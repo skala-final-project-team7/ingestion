@@ -13,7 +13,9 @@ from app.adapters.base import ActiveIds, ChangeEvent, DocumentSourceAdapter
 from app.ingestion.crawler import CrawlRequest, run_full_crawl
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import FakeQueuePublisher
+from app.schemas.enums import IngestionStage, IngestionStatus
 from app.schemas.page_object import PageObject
+from app.storage.jobs import FakeIngestionJobsRepository
 from app.storage.raw_store import FakeRawPageStore
 
 
@@ -112,3 +114,48 @@ def test_run_full_crawl_isolates_failed_page() -> None:
     assert result.pages_collected == 1
     assert result.failed_page_ids == ["page-bad"]
     assert set(store.pages) == {"page-ok"}
+
+
+def test_run_full_crawl_records_crawl_jobs_when_jobs_injected() -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    jobs = FakeIngestionJobsRepository()
+    source = _FakeSource([_page("page-1"), _page("page-2")])
+
+    run_full_crawl(
+        CrawlRequest(space_key="ENG"),
+        raw_store=store,
+        publisher=publisher,
+        adapter=source,
+        jobs=jobs,
+    )
+
+    assert [r.page_id for r in jobs.records] == ["page-1", "page-2"]
+    assert all(r.stage is IngestionStage.CRAWL for r in jobs.records)
+    assert all(r.status is IngestionStatus.SUCCESS for r in jobs.records)
+    assert all(r.attachment_id is None and r.error is None for r in jobs.records)
+
+
+def test_run_full_crawl_does_not_record_failed_pages() -> None:
+    class _RaisingStore(FakeRawPageStore):
+        def save_page(self, page: PageObject) -> None:
+            if page.page_id == "page-bad":
+                raise RuntimeError("mongo down")
+            super().save_page(page)
+
+    store = _RaisingStore()
+    publisher = FakeQueuePublisher()
+    jobs = FakeIngestionJobsRepository()
+    source = _FakeSource([_page("page-ok"), _page("page-bad")])
+
+    result = run_full_crawl(
+        CrawlRequest(space_key="ENG"),
+        raw_store=store,
+        publisher=publisher,
+        adapter=source,
+        jobs=jobs,
+    )
+
+    # 실패 페이지는 잡 레코드를 남기지 않는다(성공 페이지만 CRAWL 기록).
+    assert result.failed_page_ids == ["page-bad"]
+    assert [r.page_id for r in jobs.records] == ["page-ok"]

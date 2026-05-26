@@ -81,8 +81,14 @@ class VerificationResult(StrEnum):
 
 
 class IngestionStage(StrEnum):
-    """Ingestion 처리 단계 — ingestion_jobs.stage (db-schema.md §2.3)."""
+    """Ingestion 처리 단계 — ingestion_jobs.stage (db-schema.md §2.3).
 
+    ``CRAWL`` 은 수집(Full Crawl / Delta 재수집) 단계로, ingestion 의 crawl 잡 기록에
+    쓰인다 (ADR 0003 항목 3 — ingestion↔rag 공유 enum, 양 레포 동시 갱신). 파이프라인
+    순서는 crawl → analyze → chunk → embed → upsert 이며 sync 는 동기화 잡이다.
+    """
+
+    CRAWL = "crawl"
     ANALYZE = "analyze"
     CHUNK = "chunk"
     EMBED = "embed"

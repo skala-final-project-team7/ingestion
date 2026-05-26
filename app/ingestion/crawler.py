@@ -12,15 +12,19 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-26, featureI-6, vendored Data Ingestion Agent 통합 — run_full_crawl 구현
     (어댑터 fetch_pages → raw_pages 적재 → Chunking Queue 발행 → CrawlResult 집계).
+  - 2026-05-26, ADR 0003 항목 3, ``IngestionStage.CRAWL`` 추가에 따라 crawl 단계
+    ``ingestion_jobs`` 기록 배선 — optional ``jobs`` 주입 시 페이지별 CRAWL SUCCESS 기록.
 --------------------------------------------------
 구현 메모(featureI-6):
   - 공급원 호출은 ``app/adapters/atlassian.py`` 의 ``AtlassianSourceAdapter`` 를 통해
     추상화한다(vendored ``run_full_crawl_workflow`` 를 블랙박스로 in-process 호출).
   - ``raw_store`` / ``publisher`` 는 외부 I/O 라 주입 가능하게 둔다. 운영에서는
     RabbitMQ 연결을 소유한 Ingestion Worker(featureI-2 후속)가 publisher 를 주입한다.
-  - 잡 단계별 ``ingestion_jobs`` 기록은 stage enum 에 crawl/ingest 값이 없어(공유 자산 —
-    RAG 분기 영향) 본 change-set 에서는 보류하고 ``CrawlResult`` 를 잡 리포트로 사용한다
-    (docs/ai/current-plan.md featureI-6 TBD).
+  - crawl 단계 ``ingestion_jobs`` 기록은 ``IngestionStage.CRAWL``(ADR 0003 항목 3, 공유
+    enum — 양 레포 동시 갱신) 추가로 가능해졌다. ``jobs`` 를 주입하면 적재·발행에 성공한
+    페이지마다 CRAWL SUCCESS 를 기록한다. 미주입(기본 None)이면 기존 동작 그대로
+    ``CrawlResult`` 만 집계한다(비파괴). 실패 페이지는 status enum 에 적합한 코드가 없어
+    ``failed_page_ids`` 로만 격리하고 잡 레코드는 남기지 않는다.
   - 토큰·자격증명은 로그·메시지 페이로드에 남기지 않는다(루트 CLAUDE.md 보안 규칙).
 --------------------------------------------------
 """
@@ -29,13 +33,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from app.adapters.atlassian import AtlassianSourceAdapter
 from app.adapters.base import DocumentSourceAdapter
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import QueuePublisher
-from app.schemas.enums import SourceType
+from app.schemas.enums import IngestionStage, IngestionStatus, SourceType
 from app.schemas.page_object import PageObject
+from app.storage.jobs import IngestionJobRecord, IngestionJobsRepository
 from app.storage.raw_store import RawPageStore
 
 
@@ -66,6 +72,7 @@ def run_full_crawl(
     raw_store: RawPageStore,
     publisher: QueuePublisher,
     adapter: DocumentSourceAdapter | None = None,
+    jobs: IngestionJobsRepository | None = None,
 ) -> CrawlResult:
     """Confluence Full Crawl 실행 (FR-001).
 
@@ -80,6 +87,9 @@ def run_full_crawl(
             운영에서는 RabbitMQ 연결을 소유한 Worker 가 주입한다.
         adapter: 공급원 어댑터. None 이면 request 자격증명으로 ``AtlassianSourceAdapter``
             를 생성한다(vendored Data Ingestion Agent 호출).
+        jobs: ``ingestion_jobs`` 적재 어댑터. 주입 시 적재·발행에 성공한 페이지마다
+            ``IngestionStage.CRAWL`` SUCCESS 를 기록한다(ADR 0003 항목 3). None(기본)이면
+            기록하지 않고 기존 동작대로 ``CrawlResult`` 만 집계한다(비파괴).
 
     Returns:
         수집·발행 결과를 집계한 ``CrawlResult``.
@@ -98,6 +108,7 @@ def run_full_crawl(
     for page in source.fetch_pages():
         if request.space_key and page.space_key != request.space_key:
             continue
+        page_started = datetime.now(UTC)
         try:
             raw_store.save_page(page)
             publisher.publish(
@@ -108,6 +119,18 @@ def run_full_crawl(
             result.failed_page_ids.append(page.page_id)
             continue
         result.pages_collected += 1
+        if jobs is not None:
+            jobs.record(
+                IngestionJobRecord(
+                    page_id=page.page_id,
+                    attachment_id=None,
+                    stage=IngestionStage.CRAWL,
+                    status=IngestionStatus.SUCCESS,
+                    started_at=page_started,
+                    finished_at=datetime.now(UTC),
+                    error=None,
+                )
+            )
 
     result.elapsed_ms = int((time.monotonic() - started) * 1000)
     return result
