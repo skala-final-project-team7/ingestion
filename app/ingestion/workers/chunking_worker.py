@@ -12,33 +12,52 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-26, featureI-4, 단일 Chunking+Embedding Worker 배선 — process_chunking_message
     (raw_pages 로드 → chunk_page → index_chunks → ingestion_jobs) + run_chunking_worker 루프.
+  - 2026-05-26, featureI-3b, 첨부 청킹 경로 배선 — ``source_type`` 분기로 본문/첨부 처리를
+    나눈다. 첨부는 raw_attachments 로드 → analyze_attachment(유형·유효성) → chunk_attachment
+    (파일 직접 읽기) → index_chunks(attachment_download_urls) 흐름이다. rag 레포의 ingestion
+    그래프와 동일하게 파일 기반 chunk_attachment 를 사용하며 별도 attachment_texts 컬렉션은
+    청킹 경로에 두지 않는다(extracted_text 는 raw_attachments 에 함께 적재).
 --------------------------------------------------
-구현 메모(featureI-4):
+구현 메모(featureI-4/I-3b):
   - 외부 의존성(임베더/Qdrant/cache/raw_store/jobs)은 주입 가능하게 둔다(테스트는 Fake).
     실 어댑터(E5/BM25/Qdrant from_settings) 부트스트랩은 배포 wiring(후속).
   - doc_type 은 chunk_page 의 라벨 휴리스틱 폴백을 사용한다. GPT-4o-mini 문서 분석기[Agent]
-    는 featureI-4b 후속. 첨부 청크 경로는 첨부 입력이 생기는 FR-002(featureI-3) 이후 연결.
-  - ACL 누락 페이지는 색인하지 않는다(INVALID_ACL — app/CLAUDE.md §3). 토큰·자격증명은
-    메시지·로그에 남기지 않는다.
+    는 featureI-4b 후속.
+  - 첨부: ``chunk_attachment`` 는 첨부 파일을 파일 시스템에서 직접 읽으므로(fitz/openpyxl/
+    python-docx) ``deps.chunk_attachment_fn`` 으로 주입 가능하게 둔다(테스트는 파일 시스템
+    의존성 회피용 fake 주입 — rag IngestionGraphDeps.chunk_attachment_fn 패턴 정합).
+  - ACL 누락 페이지는 색인하지 않는다(INVALID_ACL — app/CLAUDE.md §3). 첨부는 부모 페이지
+    ACL 을 상속한다. 토큰·자격증명은 메시지·로그에 남기지 않는다.
 --------------------------------------------------
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from app.ingestion.chunker import chunk_page
+from app.ingestion.attachment_analyzer import analyze_attachment
+from app.ingestion.chunker import chunk_attachment, chunk_page
 from app.ingestion.indexer import index_chunks
 from app.ingestion.workers.consumer import MessageConsumer
-from app.schemas.enums import IngestionStage, IngestionStatus
+from app.schemas.chunk import Chunk
+from app.schemas.enums import IngestionStage, IngestionStatus, SourceType
 from app.storage.jobs import IngestionJobRecord, IngestionJobsRepository
 from app.storage.raw_store import RawPageStore
+
+# chunk_attachment 시그니처 — 파일 시스템 의존성을 갖는 함수라 deps 주입으로 테스트한다
+# (rag app/pipeline/ingestion_graph.py 의 ChunkAttachmentFn 패턴 정합).
+ChunkAttachmentFn = Callable[..., list[Chunk]]
 
 
 class RawPageNotFoundError(KeyError):
     """``content.chunking`` 메시지의 ``page_id`` 가 ``raw_pages`` 에 없을 때(파이프라인 불일치)."""
+
+
+class AttachmentNotFoundError(KeyError):
+    """첨부 메시지의 ``attachment_id`` 가 ``raw_attachments`` 에 없을 때(파이프라인 불일치)."""
 
 
 @dataclass(slots=True)
@@ -54,6 +73,8 @@ class ChunkingWorkerDeps:
         chunk_lookup: ``chunk_lookup`` 어댑터. None 이면 적재를 생략한다(legacy 호환).
         doc_type_resolver: 문서 분석기[Agent](`DocumentAnalyzer`). 주입 시 스페이스 단위
             LLM doc_type 으로 청킹하고, None 이면 chunk_page 의 라벨 휴리스틱 폴백을 쓴다.
+        chunk_attachment_fn: 첨부 청킹 함수. 기본값은 파일을 직접 읽는 ``chunk_attachment``
+            이며, 테스트는 파일 시스템 의존성 회피용 fake 를 주입한다(featureI-3b).
     """
 
     raw_store: RawPageStore
@@ -64,6 +85,7 @@ class ChunkingWorkerDeps:
     jobs: IngestionJobsRepository | None = None
     chunk_lookup: Any | None = None
     doc_type_resolver: Any | None = None
+    chunk_attachment_fn: ChunkAttachmentFn = chunk_attachment
 
 
 @dataclass(slots=True)
@@ -75,25 +97,45 @@ class ChunkingMessageResult:
     chunks: int = 0
     upserted: int = 0
     skipped: int = 0
+    # 첨부 메시지일 때만 채워진다(본문 메시지는 None).
+    attachment_id: str | None = None
 
 
 def process_chunking_message(
     message: dict[str, Any], deps: ChunkingWorkerDeps
 ) -> ChunkingMessageResult:
-    """``content.chunking`` 메시지 1건을 청킹·임베딩·색인한다(단위 처리 — 테스트 대상).
+    """``content.chunking`` 메시지 1건을 ``source_type`` 으로 분기해 처리한다(테스트 대상).
 
-    흐름: raw_pages 로드 → ACL 게이트(INVALID_ACL) → chunk_page(폴백 doc_type) →
-    빈 본문 게이트(EMPTY_BODY) → index_chunks(embed+upsert+cache) → ingestion_jobs(SUCCESS).
+    ``source_type`` 이 ``attachment`` 면 첨부 청킹 경로, 그 외(기본 ``page``)는 본문 청킹
+    경로로 위임한다. Full Crawl(crawler) 은 본문·첨부 메시지를 모두 ``content.chunking``
+    으로 발행하며, 본 Worker 가 단일 큐에서 양쪽을 소비한다(featureI-3b).
 
     Args:
-        message: 발행 메시지. ``page_id`` 필수(`build_chunking_message` 형식).
+        message: 발행 메시지. 본문은 ``page_id`` 필수, 첨부는 ``page_id``+``attachment_id``
+            필수(`build_chunking_message`/`build_attachment_chunking_message` 형식).
         deps: 주입 의존성 묶음.
 
     Returns:
-        처리 결과(`ChunkingMessageResult`) — status 는 SUCCESS / INVALID_ACL / EMPTY_BODY.
+        처리 결과(`ChunkingMessageResult`).
 
     Raises:
         RawPageNotFoundError: ``page_id`` 가 ``raw_pages`` 에 없을 때(상위에서 DLQ 처리).
+        AttachmentNotFoundError: 첨부 메시지의 ``attachment_id`` 가 ``raw_attachments`` 에
+            없을 때(상위에서 DLQ 처리).
+    """
+    source_type = str(message.get("source_type", SourceType.PAGE.value))
+    if source_type == SourceType.ATTACHMENT.value:
+        return _process_attachment_message(message, deps)
+    return _process_page_message(message, deps)
+
+
+def _process_page_message(
+    message: dict[str, Any], deps: ChunkingWorkerDeps
+) -> ChunkingMessageResult:
+    """본문 청킹 경로 — raw_pages 로드 → ACL 게이트 → chunk_page → 빈 본문 게이트 → 색인.
+
+    흐름: raw_pages 로드 → ACL 게이트(INVALID_ACL) → chunk_page(폴백 doc_type) →
+    빈 본문 게이트(EMPTY_BODY) → index_chunks(embed+upsert+cache) → ingestion_jobs(SUCCESS).
     """
     page_id = str(message["page_id"])
     started_at = datetime.now(UTC)
@@ -137,6 +179,118 @@ def process_chunking_message(
     )
 
 
+def _process_attachment_message(
+    message: dict[str, Any], deps: ChunkingWorkerDeps
+) -> ChunkingMessageResult:
+    """첨부 청킹 경로 — raw_attachments 로드 → ACL 게이트(부모 상속) → analyze → chunk → 색인.
+
+    흐름: raw_pages/raw_attachments 로드 → 부모 페이지 ACL 게이트(INVALID_ACL) →
+    analyze_attachment(유형·텍스트 유효성, 미통과 시 그 status 기록 후 스킵) →
+    chunk_attachment(파일 직접 읽기, ValueError 는 ATTACH_ENCRYPTED/UNSUPPORTED 로 격리) →
+    index_chunks(attachment_download_urls) → ingestion_jobs(SUCCESS).
+
+    rag 레포 ingestion 그래프의 첨부 처리와 동일하게 파일 기반 ``chunk_attachment`` 를 쓴다.
+    첨부 청크는 부모 페이지의 ACL·space_key·labels 를 상속한다(`build_attachment_metadata`).
+    """
+    page_id = str(message["page_id"])
+    attachment_id = str(message["attachment_id"])
+    started_at = datetime.now(UTC)
+
+    page = deps.raw_store.get_page(page_id)
+    if page is None:
+        raise RawPageNotFoundError(page_id)
+    attachment = deps.raw_store.get_attachment(attachment_id)
+    if attachment is None:
+        raise AttachmentNotFoundError(attachment_id)
+
+    # ACL 게이트 — 첨부는 부모 페이지 ACL 을 상속한다(부모가 ACL 누락이면 색인 금지).
+    if page.is_acl_missing:
+        _record(
+            deps,
+            page_id,
+            IngestionStatus.INVALID_ACL,
+            started_at,
+            error="ACL missing",
+            attachment_id=attachment_id,
+        )
+        return ChunkingMessageResult(
+            page_id=page_id, status=IngestionStatus.INVALID_ACL, attachment_id=attachment_id
+        )
+
+    # 첨부 분석 — 유형 판별 + 텍스트 유효성(결정론, LLM 미호출). 미통과 시 그 status 기록 후 스킵.
+    analysis = analyze_attachment(attachment)
+    if not analysis.analyzable:
+        _record(
+            deps,
+            page_id,
+            analysis.status,
+            started_at,
+            error=analysis.reason,
+            stage=IngestionStage.ANALYZE,
+            attachment_id=attachment_id,
+        )
+        return ChunkingMessageResult(
+            page_id=page_id, status=analysis.status, attachment_id=attachment_id
+        )
+
+    # 첨부 청킹 — chunk_attachment 는 첨부 파일을 직접 읽는다(테스트는 chunk_attachment_fn 주입).
+    try:
+        chunks = deps.chunk_attachment_fn(attachment, page, analysis.attachment_type)
+    except ValueError as exc:
+        # 암호화 PDF(ATTACH_ENCRYPTED) / 미지원 유형은 첨부 단위로 격리(본문·다른 첨부 무영향).
+        status = (
+            IngestionStatus.ATTACH_ENCRYPTED
+            if "ATTACH_ENCRYPTED" in str(exc)
+            else IngestionStatus.UNSUPPORTED_ATTACH_TYPE
+        )
+        _record(
+            deps,
+            page_id,
+            status,
+            started_at,
+            error=str(exc),
+            stage=IngestionStage.CHUNK,
+            attachment_id=attachment_id,
+        )
+        return ChunkingMessageResult(page_id=page_id, status=status, attachment_id=attachment_id)
+
+    if not chunks:
+        # 추출 가능했으나 청크가 0건(빈 첨부) — 적재 회피, SUCCESS 로 종결한다.
+        _record(
+            deps,
+            page_id,
+            IngestionStatus.SUCCESS,
+            started_at,
+            error=None,
+            attachment_id=attachment_id,
+        )
+        return ChunkingMessageResult(
+            page_id=page_id, status=IngestionStatus.SUCCESS, attachment_id=attachment_id
+        )
+
+    result = index_chunks(
+        chunks,
+        version_by_page_id={page.page_id: page.version_number},
+        dense_embedder=deps.dense_embedder,
+        sparse_embedder=deps.sparse_embedder,
+        store=deps.store,
+        cache=deps.cache,
+        chunk_lookup=deps.chunk_lookup,
+        attachment_download_urls={attachment_id: attachment.download_url},
+    )
+    _record(
+        deps, page_id, IngestionStatus.SUCCESS, started_at, error=None, attachment_id=attachment_id
+    )
+    return ChunkingMessageResult(
+        page_id=page_id,
+        status=IngestionStatus.SUCCESS,
+        chunks=len(chunks),
+        upserted=result.upserted_count,
+        skipped=result.skipped_count,
+        attachment_id=attachment_id,
+    )
+
+
 def run_chunking_worker(
     consumer: MessageConsumer, deps: ChunkingWorkerDeps
 ) -> list[ChunkingMessageResult]:
@@ -155,19 +309,23 @@ def _record(
     started_at: datetime,
     *,
     error: str | None,
+    stage: IngestionStage = IngestionStage.UPSERT,
+    attachment_id: str | None = None,
 ) -> None:
     """``ingestion_jobs`` 에 단계 결과를 기록한다(jobs 미주입 시 noop).
 
-    단일 Worker 가 chunk→embed→upsert 를 결합 처리하므로 색인 시도의 종단 단계인
-    ``upsert`` 로 1건 기록한다(stage enum 정합 — db-schema §2.3).
+    단일 Worker 가 chunk→embed→upsert 를 결합 처리하므로 색인 시도는 종단 단계인
+    ``upsert`` 로 1건 기록한다(stage enum 정합 — db-schema §2.3). 첨부 경로에서 분석·청킹
+    단계가 먼저 실패하면 ``stage`` 를 ANALYZE/CHUNK 로 명시해 어디서 걸렸는지 남긴다.
+    첨부 메시지는 ``attachment_id`` 를 채워 페이지 잡과 구분한다.
     """
     if deps.jobs is None:
         return
     deps.jobs.record(
         IngestionJobRecord(
             page_id=page_id,
-            attachment_id=None,
-            stage=IngestionStage.UPSERT,
+            attachment_id=attachment_id,
+            stage=stage,
             status=status,
             started_at=started_at,
             finished_at=datetime.now(UTC),

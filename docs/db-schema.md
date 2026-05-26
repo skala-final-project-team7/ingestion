@@ -186,11 +186,31 @@ Data Ingestion Agent(Full Crawl) / Data Sync Agent(Delta) 가 수집한 표준 `
 
 ### 2.7 `raw_attachments` (첨부 원본 — FR-001/FR-002)
 
-페이지 첨부의 메타·바이너리 핸들을 `attachment_id` 키로 적재한다(`MongoRawPageStore.
-save_attachment`). **현재 Data Ingestion Agent MVP 는 첨부를 수집하지 않으므로
-(`attachment_processing_status=not_supported_in_mvp`) 본 컬렉션은 비어 있다.** 첨부 수집·
-텍스트 추출은 FR-002(featureI-3)에서 채운다. 필드(예정): `attachment_id`, `filename`,
-`mime_type`, `download_url`, `parent_page_id`, `last_modified`, `extracted_format`.
+페이지 첨부의 메타·텍스트·다운로드 핸들을 `attachment_id` 키로 멱등 적재한다
+(`MongoRawPageStore.save_attachment`). 표준 `Attachment`(설계서 §3.2)를 그대로 적재하며,
+첨부 Chunking Worker 가 `attachment_id` 로 조회(`get_attachment`)해 청킹한다.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `attachment_id` | string (upsert 키) | 첨부 식별자. 같은 id 재수집 시 멱등 upsert |
+| `filename` | string | 첨부 파일명(출처 카드·유형 추정) |
+| `mime_type` | string | MIME 타입(유형 분류 1차 키) |
+| `extracted_text` | string | 추출 텍스트. `analyze_attachment` 의 유효성 게이트(길이·반복비율) 입력 |
+| `extracted_format` | string | `RAW_TEXT` / `SHEET_SERIALIZED` (`ExtractedFormat`) |
+| `download_url` | string | 사용자 노출용 URL — `chunk_lookup.download_url` 로 전달 |
+| `parent_page_id` | string | 부모 페이지(ACL·메타 상속원) |
+| `last_modified` | datetime(ISO) | Delta Sync 변경 비교 키 |
+| `file_size_bytes` | integer \| null | 첨부 크기(optional) |
+| `local_path` | string \| null | 청커가 파일을 직접 열 로컬 경로(ADR-2026-001). 운영 어댑터가 다운로드 시 채움 |
+
+> **적재 흐름(featureI-3b).** `crawler.run_full_crawl` 이 `page.attachments` 가 있으면 첨부를
+> `raw_attachments` 에 적재하고 첨부 `content.chunking`(`source_type=attachment`) 메시지를
+> 발행한다. Worker(`_process_attachment_message`)는 부모 페이지 ACL 상속 게이트 →
+> `analyze_attachment` → `chunk_attachment`(파일 직접 읽기) → `index_chunks` 로 색인한다.
+> 청킹은 rag 레포와 동일하게 파일 기반이므로 별도 `attachment_texts` 컬렉션은 두지 않는다
+> (`extracted_text` 는 본 컬렉션에 함께 보존). **남은 것은 실 Confluence 첨부 다운로드 어댑터**
+> (바이너리 수집 → `extracted_text`/`local_path` 채움)로, 인프라 의존이라 후속이다. vendored
+> 에이전트 MVP 는 첨부를 수집하지 않아(`attachments=[]`) 운영 경로에서는 아직 비어 있다.
 
 ---
 

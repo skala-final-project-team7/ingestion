@@ -11,6 +11,9 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-26, 최초 작성, featureI-6 — RawPageStore ABC + FakeRawPageStore +
     MongoRawPageStore. page_id/attachment_id 기준 멱등 upsert(재크롤 안전).
+  - 2026-05-26, featureI-3b — get_attachment(attachment_id) 읽기 메서드 추가. 첨부
+    Chunking Worker 가 메시지의 attachment_id 로 raw_attachments 원본을 조회한다
+    (메시지엔 식별자만 싣고 첨부 메타·extracted_text 는 raw_attachments 에서 로드).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -51,6 +54,15 @@ class RawPageStore(ABC):
         사용한다(메시지에는 식별자만 싣고 본문은 raw_pages 에서 로드).
         """
 
+    @abstractmethod
+    def get_attachment(self, attachment_id: str) -> Attachment | None:
+        """``attachment_id`` 의 ``raw_attachments`` 원본을 Attachment 로 복원한다. 없으면 None.
+
+        첨부 Chunking Worker 가 ``content.chunking``(``source_type=attachment``) 메시지의
+        ``attachment_id`` 로 첨부 메타·``extracted_text``·다운로드 핸들을 조회할 때 사용한다
+        (메시지엔 식별자만 싣고 첨부 본문은 raw_attachments 에서 로드 — featureI-3b).
+        """
+
 
 @dataclass(slots=True)
 class FakeRawPageStore(RawPageStore):
@@ -71,6 +83,9 @@ class FakeRawPageStore(RawPageStore):
 
     def get_page(self, page_id: str) -> PageObject | None:
         return self.pages.get(page_id)
+
+    def get_attachment(self, attachment_id: str) -> Attachment | None:
+        return self.attachments.get(attachment_id)
 
 
 class MongoRawPageStore(RawPageStore):
@@ -128,3 +143,11 @@ class MongoRawPageStore(RawPageStore):
         if doc is None:
             return None
         return PageObject.model_validate(doc)
+
+    def get_attachment(self, attachment_id: str) -> Attachment | None:
+        doc = self._attachments.find_one(  # type: ignore[attr-defined]
+            {"attachment_id": attachment_id}, projection={"_id": 0}
+        )
+        if doc is None:
+            return None
+        return Attachment.model_validate(doc)

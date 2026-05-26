@@ -14,6 +14,10 @@
     (어댑터 fetch_pages → raw_pages 적재 → Chunking Queue 발행 → CrawlResult 집계).
   - 2026-05-26, ADR 0003 항목 3, ``IngestionStage.CRAWL`` 추가에 따라 crawl 단계
     ``ingestion_jobs`` 기록 배선 — optional ``jobs`` 주입 시 페이지별 CRAWL SUCCESS 기록.
+  - 2026-05-26, featureI-3b, 첨부 발행 배선 — ``page.attachments`` 가 있으면 첨부 원본을
+    ``raw_attachments`` 에 적재하고 ``content.chunking``(``source_type=attachment``) 메시지를
+    발행한다. 첨부 단위 적재·발행 실패는 페이지 전체로 전파하지 않고 격리한다(graceful
+    degrade). 실제 Confluence 첨부 다운로드 어댑터는 후속(인프라 의존 TBD).
 --------------------------------------------------
 구현 메모(featureI-6):
   - 공급원 호출은 ``app/adapters/atlassian.py`` 의 ``AtlassianSourceAdapter`` 를 통해
@@ -40,7 +44,7 @@ from app.adapters.base import DocumentSourceAdapter
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import QueuePublisher
 from app.schemas.enums import IngestionStage, IngestionStatus, SourceType
-from app.schemas.page_object import PageObject
+from app.schemas.page_object import Attachment, PageObject
 from app.storage.jobs import IngestionJobRecord, IngestionJobsRepository
 from app.storage.raw_store import RawPageStore
 
@@ -63,6 +67,7 @@ class CrawlResult:
     pages_collected: int = 0
     attachments_collected: int = 0
     failed_page_ids: list[str] = field(default_factory=list)
+    failed_attachment_ids: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
 
 
@@ -96,7 +101,11 @@ def run_full_crawl(
 
     Note:
         페이지 단위 적재·발행 실패는 잡 전체로 전파하지 않고 ``failed_page_ids`` 로 격리
-        한다(graceful degrade). 첨부는 에이전트 MVP 미수집이라 항상 0 이다.
+        한다(graceful degrade). 첨부가 있으면(``page.attachments``) 첨부 원본을
+        ``raw_attachments`` 에 적재하고 첨부 ``content.chunking`` 메시지를 발행하며, 첨부
+        단위 실패는 ``failed_attachment_ids`` 로 격리한다. 현재 vendored 에이전트 MVP 는
+        첨부를 수집하지 않으므로(``attachments=[]``) 운영 경로에서는 0 이지만, JSON 픽스처/
+        후속 다운로드 어댑터가 첨부를 채우면 본 경로가 그대로 동작한다.
     """
     source = adapter or AtlassianSourceAdapter(
         cloud_id=request.cloud_id or "",
@@ -132,8 +141,53 @@ def run_full_crawl(
                 )
             )
 
+        # 첨부 수집 — 첨부 원본 적재 + 첨부 Chunking Queue 발행(첨부 단위 격리).
+        for attachment in page.attachments:
+            _collect_attachment(
+                page, attachment, raw_store=raw_store, publisher=publisher, jobs=jobs, result=result
+            )
+
     result.elapsed_ms = int((time.monotonic() - started) * 1000)
     return result
+
+
+def _collect_attachment(
+    page: PageObject,
+    attachment: Attachment,
+    *,
+    raw_store: RawPageStore,
+    publisher: QueuePublisher,
+    jobs: IngestionJobsRepository | None,
+    result: CrawlResult,
+) -> None:
+    """첨부 1건을 ``raw_attachments`` 에 적재하고 첨부 Chunking Queue 메시지를 발행한다.
+
+    첨부 단위 적재·발행 실패는 페이지·다른 첨부로 전파하지 않고 ``failed_attachment_ids`` 로
+    격리한다(graceful degrade). ``jobs`` 주입 시 성공 첨부마다 CRAWL SUCCESS 를 기록한다.
+    """
+    attachment_started = datetime.now(UTC)
+    try:
+        raw_store.save_attachment(attachment)
+        publisher.publish(
+            routing_key=QUEUE_CHUNKING,
+            message=build_attachment_chunking_message(page, attachment),
+        )
+    except Exception:  # noqa: BLE001 — 첨부 단위 격리(graceful degrade)
+        result.failed_attachment_ids.append(attachment.attachment_id)
+        return
+    result.attachments_collected += 1
+    if jobs is not None:
+        jobs.record(
+            IngestionJobRecord(
+                page_id=page.page_id,
+                attachment_id=attachment.attachment_id,
+                stage=IngestionStage.CRAWL,
+                status=IngestionStatus.SUCCESS,
+                started_at=attachment_started,
+                finished_at=datetime.now(UTC),
+                error=None,
+            )
+        )
 
 
 def build_chunking_message(page: PageObject) -> dict[str, object]:
@@ -147,4 +201,22 @@ def build_chunking_message(page: PageObject) -> dict[str, object]:
         "space_key": page.space_key,
         "version_number": page.version_number,
         "source_type": SourceType.PAGE.value,
+    }
+
+
+def build_attachment_chunking_message(
+    page: PageObject, attachment: Attachment
+) -> dict[str, object]:
+    """첨부 Chunking Queue 발행 메시지 — Worker 가 ``attachment_id`` 로 raw_attachments 를 조회한다.
+
+    본문 메시지와 동일 큐(``content.chunking``)를 공유하되 ``source_type=attachment`` 로
+    구분한다. 부모 ``page_id`` 를 함께 실어 Worker 가 ACL·메타 상속원인 부모 페이지를
+    raw_pages 에서 로드할 수 있게 한다. 첨부 본문·extracted_text·자격증명은 싣지 않는다.
+    """
+    return {
+        "page_id": page.page_id,
+        "attachment_id": attachment.attachment_id,
+        "space_key": page.space_key,
+        "version_number": page.version_number,
+        "source_type": SourceType.ATTACHMENT.value,
     }

@@ -346,3 +346,59 @@ cache·store 공유 재실행 멱등성(재upsert 스킵), ③ ACL 누락 페이
 
 **후속(featureI-7c TBD)**: pika consumer/publisher 실행 loop + CLI 엔트리포인트(RabbitMQ 연결).
 `Settings` 에 `rabbitmq_url` 추가 필요.
+
+---
+
+## 2026-05-26 — featureI-3b: 첨부 청킹 체인 배선 (FR-002 → 청킹 경로 연결)
+
+**작업**: featureI-3(추출기 코어)에서 보류했던 첨부 **청킹 체인**을 배선했다. 추출기 코어는
+이미 있었고, 비어 있던 것은 첨부가 청크가 되어 Qdrant 에 적재되는 경로였다.
+
+**설계 결정(사용자 승인)**: 첨부 청킹은 **rag 레포 ingestion 그래프와 동일하게 파일 기반
+`chunk_attachment`** 로 처리한다(파일을 직접 읽어 청크 생성). 별도 `attachment_texts` 컬렉션은
+청킹 경로에 두지 않고, `extracted_text` 는 `raw_attachments` 에 함께 보존한다
+(`analyze_attachment` 의 길이·반복비율 유효성 게이트 입력으로만 사용). 작업 범위는 **Fake 로
+검증 가능한 전부**이며, 실 Confluence 다운로드 어댑터와 pika 실행 loop 는 인프라 의존 후속.
+
+**구현**
+
+- `app/storage/raw_store.py` — `get_attachment(attachment_id)` 읽기 메서드(ABC/Fake/Mongo).
+  본문(`get_page`)과 대칭. Mongo 는 `projection={"_id": 0}` + `Attachment.model_validate`.
+- `app/ingestion/workers/chunking_worker.py` — `process_chunking_message` 가 `source_type`
+  으로 본문/첨부 분기(기본 `page`, 회귀 무영향). `_process_attachment_message`: raw_pages/
+  raw_attachments 로드 → **부모 페이지 ACL 상속 게이트**(INVALID_ACL) → `analyze_attachment`
+  (미통과 시 그 status 를 stage=ANALYZE 로 기록 후 스킵) → `chunk_attachment_fn`(ValueError 는
+  `ATTACH_ENCRYPTED`/`UNSUPPORTED_ATTACH_TYPE` 로 매핑, stage=CHUNK) → `index_chunks`
+  (`attachment_download_urls={id: download_url}`) → UPSERT SUCCESS. `chunk_attachment` 는 파일
+  시스템 의존이라 `ChunkingWorkerDeps.chunk_attachment_fn` 으로 주입 가능(rag
+  IngestionGraphDeps 패턴 정합). `AttachmentNotFoundError`, `ChunkingMessageResult.attachment_id`,
+  `_record(stage, attachment_id)` 확장 추가.
+- `app/ingestion/crawler.py` — `build_attachment_chunking_message(page, attachment)` +
+  `run_full_crawl` 이 `page.attachments` 를 `save_attachment` + 첨부 `content.chunking`
+  (`source_type=attachment`) 발행. 첨부 단위 적재·발행 실패는 `failed_attachment_ids` 로 격리
+  (페이지·다른 첨부 무영향), `jobs` 주입 시 첨부 CRAWL SUCCESS 기록.
+- `app/ingestion/pipeline.py` — `build_poc_components`/`run_poc_ingestion` 에 `chunk_attachment_fn`
+  주입 파라미터(파일 시스템 없이 crawl→첨부 적재→첨부 청킹→Qdrant 전 체인 e2e).
+
+**설계 메모**
+
+- 첨부 메시지는 **본문과 같은 `content.chunking` 큐**를 공유하고 `source_type` 으로만 구분한다
+  (신규 큐 미추가 — `QUEUE_ATTACHMENT` 는 예약 유지). 단일 Worker 가 양쪽을 소비한다.
+- 첨부 청크의 멱등성은 본문과 동일하게 `(chunk_id, version_number)` 캐시로 보장된다
+  (`version_by_page_id={page.page_id: page.version_number}`). 첨부 `chunk_id` 는
+  `make_chunk_id(page_id, chunk_index, attachment_id)` 로 결정론적.
+- ACL: 첨부는 부모 페이지 ACL 을 상속하므로(`build_attachment_metadata`), 부모가 INVALID_ACL
+  이면 첨부도 색인하지 않는다.
+
+**검증**: ruff check / ruff format / py_compile(app 전체 + 변경 테스트) 통과. 첨부 청킹 테스트는
+`chunk_attachment_fn` fake 주입으로 외부 파일 의존성을 회피한다. 신규/확장 테스트:
+`test_chunking_worker.py`(첨부 청킹·ACL 상속·미지원/저품질→ANALYZE·ATTACH_ENCRYPTED/기타
+ValueError→CHUNK·멱등성·누락 첨부/부모 페이지·본문+첨부 혼합 디스패치),
+`test_crawler.py`(첨부 적재·발행 메시지 형식·첨부 CRAWL 잡·실패 격리),
+`test_pipeline_e2e.py`(첨부 전 체인 + 재실행 멱등성), `test_raw_store.py`(get_attachment).
+**전체 pytest·`./scripts/verify.sh` 는 Mac/3.11** (샌드박스 Python 3.10 은 StrEnum 미지원).
+
+**후속(TBD)**: ① 실 Confluence 첨부 **다운로드 어댑터**(Attachment API 바이너리 수집 →
+`local_path`/`extracted_text` 채움, 인프라 의존). ② pika consumer/publisher 실행 loop
+(featureI-7c 와 공통 — RabbitMQ 연결). vendored 에이전트 MVP 가 첨부를 수집하면 본 체인이
+그대로 동작한다(현재 `attachments=[]`).
