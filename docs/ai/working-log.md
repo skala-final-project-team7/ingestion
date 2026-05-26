@@ -5,6 +5,46 @@
 
 ---
 
+## 2026-05-26 — ADR 0003 항목 4 적용: soft_delete 도입 (승인됨)
+
+**작업**: ADR 0003 항목 4(승인 필요로 보류했던 항목)를 사용자 승인 후 적용. Qdrant payload에
+soft-delete 플래그를 도입하고, rag 검색이 삭제분을 제외하도록 공유 계약을 확장.
+
+**변경(공유 자산 — 양 레포 동시·바이트 동일)**
+
+- `app/ingestion/vector_store.py:build_point_payload`: `"is_deleted": False` 추가(신규/재색인
+  upsert 기본값). owning source rag 먼저 → ingestion 미러.
+- `app/storage/qdrant_client.py`:
+  - `_BOOL_INDEX_FIELDS=("is_deleted",)` + `_ensure_payload_indexes`에 BOOL 인덱스 생성.
+  - `_build_combined_filter`에 `must_not(is_deleted=true)` 추가 — 모든 검색이 삭제분 제외.
+    필드 부재(legacy)는 매칭 안 돼 자연 통과(미삭제 간주, 재색인 없이 후방 호환).
+  - `soft_delete_by_page_id`/`soft_delete_by_attachment_id`/`_soft_delete_by_field`(set_payload)
+    추가 — Point 보존하고 `is_deleted`만 True. hard delete(`delete_by_*`)는 그대로 보존.
+  - rag에서 편집 후 ingestion에 파일 단위 복사로 바이트 동일 보장.
+
+**변경(레포 전용)**
+
+- (ingestion) `app/storage/qdrant_fake.py`: `_StoredPoint.is_deleted` 추가 + 실 store와 동일한
+  `soft_delete_by_*`(dataclasses.replace) — 드롭인 인터페이스 정합.
+- (ingestion) `tests/ingestion/test_qdrant_fake.py`(신규): Fake soft_delete 가 플래그만 갱신하고
+  Point 보존하는지 검증.
+- (rag) `tests/storage/test_qdrant_client.py`: soft_delete 가 검색 제외 + Point 보존(count 불변),
+  첨부 soft_delete, 미삭제 청크 정상 검색 테스트 추가.
+- (rag) `tests/ingestion/test_vector_store.py`: payload `is_deleted` 기본 False 단언.
+- 양 레포 `docs/db-schema.md` §1.2(is_deleted 행)·§1.3(bool 인덱스), `docs/adr/0003` 항목 4 상태
+  "적용됨".
+
+**영향/주의**: soft/hard delete는 호출 측 선택. **양 레포 동시 배포** 필요. 기존 인덱스의 Point는
+`is_deleted` 필드가 없어 자동으로 "미삭제"로 동작하지만, 명시적으로 채우려면 재색인 또는 일괄
+`set_payload` 백필이 필요하다. 삭제 트리거(Delta Sync `deleted_candidate`/Trash/Webhook →
+`soft_delete_by_*`) 실배선은 store를 소유한 Sync Worker의 운영 wiring 후속(능력은 도입 완료).
+
+**검증**: 샌드박스(3.10)는 qdrant-client/StrEnum 부재로 pytest 불가 → ruff(line-length 100, 통과) +
+py_compile(통과) + 공유 자산 바이트 동일 확인. **전체 `./scripts/verify.sh`는 양 레포 Mac(3.11)에서
+수행 필요**(특히 rag `:memory:` Qdrant 통합 테스트 — soft_delete 검색 제외).
+
+---
+
 ## 2026-05-26 — ADR 0003 항목 3 적용: IngestionStage.CRAWL 추가 + crawl 잡 기록 (승인됨)
 
 **작업**: ADR 0003 항목 3(승인 필요로 보류했던 항목)을 사용자 승인 후 적용. 공유 enum

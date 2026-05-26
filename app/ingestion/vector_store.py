@@ -73,6 +73,10 @@ def build_point_payload(chunk: Chunk, version_number: int) -> dict[str, Any]:
         "webui_link": metadata.webui_link,
         "last_modified": metadata.last_modified.isoformat(),
         "version_number": version_number,
+        # soft-delete 플래그 (ADR 0003 항목 4). 신규/재색인 upsert 는 항상 False. 삭제 확정 시
+        # store.soft_delete_by_* 가 True 로 set_payload 하고, rag 검색은 is_deleted=true 를
+        # must_not 으로 제외한다. legacy 인덱스(필드 부재)는 미삭제로 간주(must_not 자연 통과).
+        "is_deleted": False,
         "source_type": metadata.source_type.value,
         "attachment_id": metadata.attachment_id,
         "attachment_filename": metadata.attachment_filename,

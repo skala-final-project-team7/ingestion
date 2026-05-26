@@ -10,6 +10,8 @@
 작성일 : 2026-05-26 (featureI-7)
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-26, 최초 작성, featureI-7 — FakeQdrantPoolStore(upsert/scroll/delete) in-memory.
+  - 2026-05-26, ADR 0003 항목 4 — soft_delete_by_page_id / soft_delete_by_attachment_id
+    추가(실 store 와 인터페이스 정합). _StoredPoint 에 is_deleted 플래그 보존.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -23,7 +25,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.ingestion.embedder.base import SparseVector
 from app.ingestion.vector_store import CONTENT_POOL, POOL_NAMES
@@ -40,6 +42,7 @@ class _StoredPoint:
     attachment_id: str | None
     source_type: SourceType
     version_number: int
+    is_deleted: bool = False
 
 
 class FakeQdrantPoolStore:
@@ -101,3 +104,21 @@ class FakeQdrantPoolStore:
         """``chunk_id`` Point 를 세 Pool 에서 삭제한다."""
         for pool in self.points.values():
             pool.pop(chunk_id, None)
+
+    def soft_delete_by_page_id(self, page_id: str) -> None:
+        """``page_id`` 일치 Point 의 ``is_deleted`` 를 True 로 설정한다 (소프트 삭제).
+
+        실 ``QdrantPoolStore.soft_delete_by_page_id`` 와 동일 의미(ADR 0003 항목 4) —
+        Point 는 보존하고 ``is_deleted`` 플래그만 갱신한다(hard delete 와 구분).
+        """
+        for pool in self.points.values():
+            for cid, p in pool.items():
+                if p.page_id == page_id:
+                    pool[cid] = replace(p, is_deleted=True)
+
+    def soft_delete_by_attachment_id(self, attachment_id: str) -> None:
+        """``attachment_id`` 일치 Point 의 ``is_deleted`` 를 True 로 설정한다(소프트 삭제)."""
+        for pool in self.points.values():
+            for cid, p in pool.items():
+                if p.attachment_id == attachment_id:
+                    pool[cid] = replace(p, is_deleted=True)
