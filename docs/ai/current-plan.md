@@ -44,14 +44,83 @@
 
 ## Milestone B — 수집 (FR-001 / FR-002)
 
-### featureI-2: Data Ingestion Agent — Confluence Full Crawl (FR-001)
+### featureI-2: Data Ingestion Agent — Confluence Full Crawl (FR-001)  📋 상세 Plan
 
-- **목표**: Atlassian REST로 (1) 접근 가능 Space 목록 → (2) homepageId → (3) descendants 트리 순회,
-  (4) Page 본문·메타·ACL(allowed_groups/allowed_users) 수집, (5) 첨부(PDF/Word/Excel) 다운로드,
-  (6) `raw_pages`/`raw_attachments`(MongoDB) 적재, (7) Chunking Queue 발행, (8) 실패 재시도/DLQ.
-- 수정 대상: `app/ingestion/crawler.py`, `app/adapters/atlassian.py`(신규), `app/storage/`, `app/ingestion/workers/`
-- 의존: Confluence token 전달 경로, RabbitMQ/Mongo 기동
-- 테스트: mock HTTP로 Space→descendants 순회, ACL 적재, 큐 메시지 형식, Rate Limit 백오프
+- **작업 목표**: Confluence 전체 문서를 초기 수집(Full Crawl)해 `raw_pages`/`raw_attachments`(MongoDB)에
+  적재하고 Chunking Queue로 인계한다. `DocumentSourceAdapter` 계약을 따르는 `AtlassianSourceAdapter`를
+  신규 구현하고, `crawler.run_full_crawl`이 이를 오케스트레이션한다.
+- **브랜치**: `feat/#2/confluence-full-crawl` (skeleton 브랜치와 분리 — 이슈번호는 팀 규칙 따름)
+- **근거**: 요구사항정의서 FR-001, `docs/atlassian-api.md`(DATA-01 Full Crawl / DATA-03 Space 목록 /
+  PageObject 매핑), `docs/architecture.md`, `docs/db-schema.md`.
+
+#### 수집 흐름 (FR-001 1~8단계)
+
+1. **Space 목록** — `DATA-03 GET /space`(사용자 접근 가능 Space만 자동 반환). 트리거 입력이 단일
+   `spaceKey`(2단계 고정값)면 해당 스페이스만.
+2. **페이지 Full Crawl** — Space별 `DATA-01 GET /content?type=page&spaceKey=...&expand=space,version,body.storage,metadata.labels,ancestors`
+   를 `limit≤100` 페이지네이션 반복(`atlassian-python-api`의 `get_all_pages_from_space_as_generator`).
+   ※ 요구사항의 homepage→descendants 트리 순회는 DATA-01 페이지네이션으로 대체(스페이스 전체 페이지 동등 수집).
+3. **PageObject 매핑** — `docs/atlassian-api.md` 매핑표대로 id/title/body.storage→body_html/version/
+   last_modified/space_key/labels/ancestors/webui_link/attachments[].
+4. **ACL 적재** — ★ 미해결(아래 선행 결정). PoC는 `_synthesize_acl`(space_key 기반) 패턴 재사용.
+5. **첨부 다운로드** — `attachments[]`의 다운로드 URL로 바이너리 수집(PDF/Word/Excel). 실패는 페이지
+   전체 실패로 전파하지 않고 격리(graceful degrade) 후 기록.
+6. **MongoDB 적재** — `raw_pages`(페이지 원본 JSON + PageObject) / `raw_attachments`(메타 + 바이너리 핸들).
+7. **Chunking Queue 발행** — `content.chunking` 라우팅 키로 후속 메시지 발행(pika). 첨부는 FR-002로 라우팅.
+8. **실패 처리** — Rate Limit(429) 지수 백오프(tenacity), 실패 페이지/첨부 재시도 또는 DLQ 보류.
+   진행/결과(성공·실패·스킵·소요시간)는 `import_jobs`(MongoDB)에 기록.
+
+#### 수정 대상 파일
+
+- `app/adapters/atlassian.py` (신규) — `AtlassianSourceAdapter(DocumentSourceAdapter)`:
+  `fetch_pages(since=None)`(None=Full Crawl, since=Delta는 FR-005에서 활용) / `list_active_ids`
+  (Reconciliation용) / `watch_changes`(미지원 → 빈 스트림). `atlassian-python-api`로 DATA-01/03 호출,
+  `access_token`+`cloudid` 주입, Rate Limit 백오프.
+- `app/adapters/factory.py` — `source.type="atlassian"` 분기 추가(기존 json_fixture 분기 유지).
+- `app/ingestion/crawler.py` (stub→구현) — `run_full_crawl(CrawlRequest)`: 어댑터 fetch_pages 순회 →
+  raw 적재 → 첨부 다운로드 → 큐 발행 → `CrawlResult` 집계.
+- `app/storage/raw_store.py` (신규) — `raw_pages`/`raw_attachments` 적재 헬퍼(기존 `mongo_cache` 패턴 재사용).
+- `app/ingestion/workers/ingestion_worker.py` (신규) — Ingestion 큐 소비 + Chunking 큐 발행(pika).
+- `app/storage/jobs.py` (기존 확장) — `import_jobs` 기록(현 `ingestion_jobs` 헬퍼 재사용/정합).
+- `app/config.py` — Confluence base URL·cloudid 경로·`source.type` 설정.
+- `docs/db-schema.md` — `raw_pages`/`raw_attachments`/`attachment_texts` 컬렉션 스키마 추가(현재 없음).
+- `tests/adapters/test_atlassian.py`, `tests/ingestion/test_crawler.py` (신규).
+
+#### 수정하지 않을 파일
+
+- `app/ingestion/chunker/`·`embedder/`·`embedding.py`·`vector_store.py`·`indexer.py` (FR-003/004 — featureI-4)
+- `app/ingestion/sync.py` (FR-005 — featureI-5), `app/ingestion/extractor/` (FR-002 — featureI-3)
+- `app/schemas/*` (PageObject/Attachment 기존 활용 — 변경 불필요)
+
+#### 선행 의존성 / 결정 필요
+
+- [ ] ★ **ACL 모델 결정** — `docs/atlassian-api.md` "ACL 미해결 사항": Atlassian 명세에 페이지 단위
+  권한 API가 없음. (a) `space_key` 기반(접근 가능 스페이스) vs (b) content restrictions API 추가 도입.
+  PoC는 (a) `_synthesize_acl` 합성으로 진행하고, 실연동은 팀(+RAG 검색 ACL 필터)과 결정. **RAG 레포의 ACL 필터와 직결 — 공유 계약.**
+- [ ] **`access_token`/`cloudId` 전달 경로** — Authorization Server→BFF→Ingestion 전달 방식 확정(요구사항 §2-2).
+- [ ] **RabbitMQ / MongoDB 로컬 기동**(docker compose) — 통합 테스트 전.
+
+#### 테스트 방법 (외부 의존성 mock/fake)
+
+- mock HTTP로 DATA-03 Space 목록 → DATA-01 페이지 페이지네이션 순회, `_links.next`/`start` 반복.
+- PageObject 매핑 정합(매핑표 전 필드), ACL 합성, 첨부 메타 매핑.
+- `raw_pages`/`raw_attachments` 적재(fake Mongo), Chunking Queue 메시지 형식·라우팅 키(fake pika).
+- Rate Limit 429 → 지수 백오프 재시도, 첨부 다운로드 실패 격리, 실패 페이지 DLQ.
+- `crawler.run_full_crawl` end-to-end(어댑터+storage+queue 전부 fake) → `CrawlResult` 집계 검증.
+
+#### 위험 요소
+
+- ACL 미해결이 검색 단계 ACL 필터와 직결 — 결정 전까지 PoC 합성으로만 진행(실연동 재작업 가능).
+- 대용량 Full Crawl 시간/메모리 — 제너레이터 스트리밍 + 배치 적재로 완화.
+- API Rate Limit / 첨부 다운로드 불안정 — 백오프·격리·DLQ로 대응.
+
+#### 완료 기준
+
+- `AtlassianSourceAdapter`가 `DocumentSourceAdapter` 계약(3개 메서드) 충족 + 단위 테스트 통과.
+- mock Full Crawl end-to-end(Space→페이지→raw 적재→Chunking Queue 발행) 통과.
+- `./scripts/verify.sh`(format→lint→test) 통과.
+- `docs/db-schema.md`에 `raw_pages`/`raw_attachments` 스키마 추가, `docs/ai/working-log.md` 기록.
+- ACL/토큰 전달의 미해결 결정은 문서에 명시(추측 구현 금지).
 
 ### featureI-3: 첨부 텍스트 추출기 (FR-002)
 
