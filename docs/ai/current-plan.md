@@ -136,20 +136,67 @@
 
 ## Milestone C — 청킹·임베딩 Worker (FR-003 문서·파일 유형 분류 + Adaptive Chunker / FR-004 Dual Embedding 색인)
 
-### featureI-4: 문서·파일 유형 분류 + Chunking / Embedding Worker (FR-003 / FR-004)
+### featureI-4: 문서·파일 유형 분류 + Chunking / Embedding Worker (FR-003 / FR-004)  ✅ 구현 완료 (단일 Worker, 2026-05-26)
 
-- **FR-003 — 문서·파일 유형 분류 + Adaptive Chunker**:
-  - 문서 분석기 [Agent] (신규 구현, GPT-4o-mini + Function Calling): 본문을 6유형(장애대응/운영가이드/
-    FAQ/회의록/ADR/트러블슈팅)으로 분류, 스페이스 단위 1회 판별 → MySQL `space_doc_type_cache` 캐싱
-    (실패 시 'general' 폴백). **rag에서는 미구현(Agent 담당자 몫)이라 복사 자산에 없음 → 본 레포에서 신설.**
-  - 첨부 분석기 [Pipeline] (복사 완료, `attachment_analyzer.py`): 파일 유형(PDF/Word/Excel) 기준 청킹 전략 분기.
-  - Adaptive Chunker [Pipeline] (복사 완료, `chunker/`): 유형별 적합 전략 + 크기·오버랩 동적 조절.
-- **FR-004 — Dual Embedding + Multi-Pool 색인** (복사 완료, `embedder/`·`embedding.py`·`vector_store.py`·`indexer.py`):
-  Dense(e5-large 1024d) + Sparse(BM25), Qdrant Title/Content/Label Pool upsert, `embedding_cache` 멱등성.
-- **Worker 배선**: Chunking Queue(`content.chunking`) 수신 → 문서/첨부 분석 → 청킹 → Embedding Queue 발행 →
-  임베딩 → Qdrant upsert. 결과는 `import_jobs`(MongoDB) 기록.
-- 수정 대상: `app/ingestion/document_analyzer.py`(신규 Agent), `app/ingestion/workers/`, (FR-004 복사 자산 재사용)
-- 테스트: 문서 분석기(mock LLM, doc_type 판별·캐싱·폴백), Worker end-to-end(fake 큐/Qdrant/Mongo), 멱등성(동일 version skip)
+> **상태: 구현 완료 (단일 Worker 토폴로지).** `content.chunking` 소비 → `raw_pages.get_page` →
+> `chunk_page`(doc_type 라벨 폴백) → `index_chunks`(Dual Embedding + Qdrant Multi-Pool upsert +
+> `embedding_cache` 멱등성) → `ingestion_jobs`(stage UPSERT) 배선. 검증 ruff/mypy/Fake end-to-end
+> 통과(전체 pytest·verify.sh 는 Mac). **후속**: featureI-4b(GPT-4o-mini 문서 분석기[Agent] +
+> MySQL `space_doc_type_cache`), 첨부 청크 경로(FR-002 이후), 실 어댑터 부트스트랩 + pika consumer
+> 배포 wiring. 신규: `workers/consumer.py`·`workers/chunking_worker.py`, `raw_store.get_page`,
+> `tests/ingestion/test_chunking_worker.py`. 상세는 `docs/ai/working-log.md` 참조. (아래는 원 Plan.)
+
+- **작업 목표**: featureI-6로 연결된 앞 절반(crawl → `raw_pages` 적재 → `content.chunking` 발행)을
+  이어받아 **`content.chunking` 메시지를 소비 → Adaptive Chunker → Dual Embedding → Qdrant upsert**
+  까지 배선해 수집 파이프라인을 end-to-end로 동작시킨다. chunker/embedder/embedding/vector_store/
+  indexer 는 이미 복사돼 있고, **소비 Worker만 없다.**
+- **브랜치**: `feat/#7/chunking-embedding-worker` (feat/#6 머지 후 분기 권장 — 스택 방지).
+- **근거**: 요구사항정의서 FR-003/FR-004, `docs/architecture.md`, `docs/chunking-strategy.md`, `docs/db-schema.md` §1.
+
+#### 핵심 설계 결정 (구현 전 확정 필요)
+
+- ★ **Worker 토폴로지**: 복사된 `indexer.index_chunks` 가 **임베딩+upsert+cache 를 한 흐름으로 결합**한다.
+  - **(A) 단일 Chunking+Embedding Worker (PoC 권장)**: `content.chunking` 소비 → `raw_pages` 로드 →
+    `chunk_page` → `index_chunks`(embed+upsert). `content.embedding` 큐는 상수로 예약만. 부품이 적고
+    Chunk 직렬화 불필요. 아키텍처 다이어그램의 4큐 중 Embedding 큐를 생략하는 절충.
+  - **(B) 2-Worker (다이어그램 정합)**: Chunking Worker(→`content.embedding` 에 Chunk payload 발행) +
+    Embedding Worker(Chunk 복원 → `index_chunks`). 다이어그램에 충실하나 Chunk 직렬화/역직렬화 필요.
+  - → PoC는 (A)로 진행하고 (B)는 운영 스케일링 시 분리하도록 문서화 제안(확정은 구현 착수 시).
+- **문서 분석기 [Agent]**: 우선 **결정론 폴백**(`chunker.body.infer_doc_type` 휴리스틱 / 'operation')로
+  배선해 end-to-end 를 먼저 닫고, **GPT-4o-mini + Function Calling + MySQL `space_doc_type_cache`** 는
+  후속 sub-feature(featureI-4b)로 분리. (rag 미구현 → 본 레포 신설.)
+
+#### 수정/신규 대상 파일
+
+- `app/ingestion/workers/chunking_worker.py` (신규) — `content.chunking` 소비 → raw_pages 로드 →
+  doc_type 판별(폴백) → `chunk_page` → `index_chunks` → `ingestion_jobs` 기록(stage `chunk`/`embed`/
+  `upsert` — **enum 이미 존재**, crawl 과 달리 기록 가능). 큐 소비 추상화(Consumer ABC + Fake + Pika).
+- `app/ingestion/workers/__init__.py` — Consumer/Worker export.
+- `app/storage/raw_store.py` (확장) — `get_page(page_id) -> PageObject | None` **읽기** 메서드 추가
+  (현재 save 만 존재). Fake/Mongo 양쪽.
+- `app/ingestion/document_analyzer.py` (신규, featureI-4b) — 문서 분석기 [Agent]. featureI-4 본편은
+  폴백만, LLM 판별은 후속.
+- 운영 의존성 빌더(실 E5/BM25 임베더 + Qdrant from_settings)는 `app/config.py` `use_real_adapters`
+  토글 패턴 재사용. 테스트는 Fake 임베더 + in-memory Qdrant/Fake cache 주입.
+- 첨부 경로(`chunk_attachment`)는 첨부 입력이 생기는 FR-002(featureI-3) 이후 연결 — 본편은 본문 청크만.
+
+#### 테스트 (외부 의존성 mock/fake)
+
+- end-to-end: `content.chunking` 메시지 → Worker → fake raw_store(get_page) → `chunk_page` →
+  Fake 임베더 + Fake Qdrant + Fake cache → upsert 카운트/`chunk_id` 검증.
+- 멱등성: 동일 `(chunk_id, version_number)` 재실행 시 `index_chunks` skip(캐시 히트) 검증.
+- doc_type 폴백 분기, `ingestion_jobs` 단계별(chunk/embed/upsert) 기록, 메시지 형식 round-trip.
+
+#### 완료 기준
+
+- crawl → publish → **chunking_worker 소비 → Qdrant upsert** 가 fake end-to-end 로 통과(멱등성 포함).
+- `./scripts/verify.sh` 통과, `docs/architecture.md`(Worker 상태)·`docs/ai/working-log.md` 갱신.
+- LLM 문서 분석기·첨부 경로·`content.embedding` 분리는 후속(featureI-4b/featureI-3)으로 문서화.
+
+#### 선행/TBD
+
+- ACL·access_token/cloud_id 전달 경로는 featureI-6와 동일 TBD(검색 정확도/실연동 — 병렬 협의).
+- 실 임베딩 모델(E5 ~2.4GB)·Qdrant 서버는 통합 테스트에만 필요. 단위/CI 는 Fake 로 대체.
 
 ## Milestone D — 데이터 동기화 에이전트 (FR-005)
 

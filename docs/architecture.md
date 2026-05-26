@@ -54,7 +54,7 @@
 | Adaptive Chunker | FR-003 | `app/ingestion/chunker/` | 복사 완료 (본문 6유형 + 첨부 3유형) |
 | Dual Embedding | FR-004 | `app/ingestion/embedder/`, `embedding.py` | 복사 완료 |
 | Multi-Pool 색인 | FR-004 | `app/ingestion/vector_store.py`, `indexer.py` | 복사 완료 |
-| RabbitMQ Workers | — | `app/ingestion/workers/` (`publisher.py` 추가) | Queue Publisher 구현 / 큐 소비 Worker 는 후속 |
+| RabbitMQ Workers | — | `app/ingestion/workers/` (`publisher.py`·`consumer.py`·`chunking_worker.py`) | Publisher/Consumer + Chunking+Embedding Worker(featureI-4, 단일 토폴로지) 구현 |
 | 문서 공급원 어댑터 | FR-001 | `app/adapters/` (`atlassian.py` 구현) | JsonFixture(복사) + Atlassian(vendored 연결, featureI-6) |
 | Raw Store | FR-001 | `app/storage/raw_store.py` | 구현(featureI-6) — `raw_pages`/`raw_attachments` 적재 |
 | 저장소 클라이언트 | — | `app/storage/` | 복사 (Mongo/Qdrant/chunk_lookup/jobs) |

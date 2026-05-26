@@ -43,6 +43,14 @@ class RawPageStore(ABC):
     def save_attachment(self, attachment: Attachment) -> None:
         """Attachment 1건을 ``raw_attachments`` 에 멱등 upsert 한다(키: ``attachment_id``)."""
 
+    @abstractmethod
+    def get_page(self, page_id: str) -> PageObject | None:
+        """``page_id`` 의 ``raw_pages`` 원본을 PageObject 로 복원한다. 없으면 None.
+
+        Chunking Worker 가 ``content.chunking`` 메시지의 ``page_id`` 로 본문 원본을 조회할 때
+        사용한다(메시지에는 식별자만 싣고 본문은 raw_pages 에서 로드).
+        """
+
 
 @dataclass(slots=True)
 class FakeRawPageStore(RawPageStore):
@@ -60,6 +68,9 @@ class FakeRawPageStore(RawPageStore):
 
     def save_attachment(self, attachment: Attachment) -> None:
         self.attachments[attachment.attachment_id] = attachment
+
+    def get_page(self, page_id: str) -> PageObject | None:
+        return self.pages.get(page_id)
 
 
 class MongoRawPageStore(RawPageStore):
@@ -109,3 +120,11 @@ class MongoRawPageStore(RawPageStore):
             {"$set": attachment.model_dump(mode="json")},
             upsert=True,
         )
+
+    def get_page(self, page_id: str) -> PageObject | None:
+        doc = self._pages.find_one(  # type: ignore[attr-defined]
+            {"page_id": page_id}, projection={"_id": 0}
+        )
+        if doc is None:
+            return None
+        return PageObject.model_validate(doc)
