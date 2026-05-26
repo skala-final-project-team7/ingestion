@@ -126,3 +126,34 @@ Worker 에 optional resolver 로 연결.
 
 **후속(TBD)**: 다중 샘플 스페이스 분석, 실 OpenAI/MySQL 부트스트랩 + Worker 에 resolver 주입 배포
 wiring, 첨부 분석기(attachment_analyzer) 연동(FR-002 이후).
+
+---
+
+## 2026-05-26 — featureI-3: 첨부 텍스트 추출기 코어 (FR-002)
+
+**작업**: 첨부 바이너리(PDF/Word/Excel/CSV) → 텍스트 추출 결정론 Pipeline 구현. 이미지·도형 제외,
+Excel/CSV 는 시트→자연어 직렬화. self-contained(공급원 무관, bytes→text).
+
+**스코프 결정**: vendored 에이전트 MVP 가 첨부를 수집하지 않아(`not_supported_in_mvp`)
+`raw_attachments` 입력이 없으므로, 이번엔 **추출기 코어 + 단위 테스트**만 구현. 첨부 수집기
+(Confluence Attachment API 다운로드 → `raw_attachments`)·`attachment_texts` 적재·Attachment/Chunking
+Queue 배선·chunker `chunk_attachment` 연결은 후속(featureI-3b). 수집은 에이전트/어댑터 확장 선행 필요.
+
+**구현**
+
+- `extractor/pdf.py` — PyMuPDF(fitz) 1차 → 예외/빈 결과 시 pdfplumber 폴백. `RAW_TEXT`.
+- `extractor/docx.py` — python-docx 문단 + 표(행 `cell | cell`). `RAW_TEXT`.
+- `extractor/spreadsheet.py` — openpyxl(xlsx)/csv → `Sheet: <name>` + `헤더: 값` 직렬화. `SHEET_SERIALIZED`.
+- `extractor/base.py`(stub→구현) — 유형 디스패치 + **graceful degrade**(예외 → `ok=False` + reason).
+  라이브러리는 각 모듈 함수 내 **지연 import**(app import 가 extras 미설치에서도 동작).
+
+**보안**: 실패 reason 에는 **예외 타입명만** 남기고 첨부 내용·자격증명을 포함하지 않는다.
+
+**검증**: ruff/format + mypy app(extras 설치해 Mac 재현, 46 files) 통과. 추출 4유형은 샌드박스
+(Python 3.10)에서 모듈 standalone 로드(StrEnum 미경유)로 실제 라이브러리 구동 스모크 통과
+(DOCX 문단+표 / XLSX·CSV 직렬화 / PDF 텍스트 / 손상 PDF → graceful degrade). 전체 pytest 는 Mac.
+`tests/ingestion/test_attachment_extractor.py`(in-test 파일 생성, 미설치 라이브러리는 importorskip),
+`tests/test_scaffold.py` 추출기 stub 테스트를 구현 계약(CSV=stdlib) 검증으로 갱신.
+
+**후속(featureI-3b TBD)**: 첨부 수집기(다운로드→raw_attachments), `attachment_texts` 적재,
+Attachment/Chunking Queue(첨부) 배선, chunker `chunk_attachment` 경로 연결.

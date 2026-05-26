@@ -126,13 +126,27 @@
 - `docs/db-schema.md`에 `raw_pages`/`raw_attachments` 스키마 추가, `docs/ai/working-log.md` 기록.
 - ACL/토큰 전달의 미해결 결정은 문서에 명시(추측 구현 금지).
 
-### featureI-3: 첨부 텍스트 추출기 (FR-002)
+### featureI-3: 첨부 텍스트 추출기 (FR-002)  📋 진행 중 (추출기 코어)
 
-- **목표**: `raw_attachments`의 PDF/Word/Excel을 텍스트로 추출(이미지·도형 제외) → `attachment_texts` 적재 →
-  Chunking Queue(첨부) 발행. Excel/CSV는 시트→자연어 직렬화.
-- 수정 대상: `app/ingestion/extractor/`, `app/ingestion/workers/`
-- 재사용: chunker의 첨부 처리 로직(`chunker/attachment.py`)과 추출 책임 분리 정리
-- 테스트: 파일 유형별 추출, 추출 실패 graceful degrade, 큐 메시지 형식
+- **목표**: 첨부 바이너리(PDF/Word/Excel/CSV)를 텍스트로 추출하는 **결정론 Pipeline** 구현
+  (이미지·도형 제외). Excel/CSV는 시트→자연어 직렬화. self-contained(공급원 무관, bytes→text).
+- **브랜치**: `feat/#9/attachment-extractor`.
+- **스코프 결정**: vendored 에이전트 MVP가 첨부를 수집하지 않아 `raw_attachments` 입력이 없으므로,
+  이번엔 **추출기 코어 + 단위 테스트**만 구현한다. 첨부 **수집기**(Confluence Attachment API 다운로드
+  → `raw_attachments` 적재)와 **Attachment Queue 배선·`attachment_texts` 적재**는 후속(featureI-3b).
+  수집은 에이전트/어댑터 확장 또는 별도 Confluence 클라이언트가 선행돼야 한다(TBD).
+- **수정/신규**:
+  - `app/ingestion/extractor/base.py`(stub→구현) — `extract_attachment_text` 유형 디스패치 +
+    graceful degrade(실패 시 `ok=False`/`reason`, 쿼리 전체 실패로 전파 금지).
+  - `app/ingestion/extractor/pdf.py`(신규) — PyMuPDF(fitz) 1차 → pdfplumber 폴백. `RAW_TEXT`.
+  - `app/ingestion/extractor/docx.py`(신규) — python-docx 본문 문단+표. `RAW_TEXT`.
+  - `app/ingestion/extractor/spreadsheet.py`(신규) — openpyxl(xlsx)/csv → 시트 자연어 직렬화. `SHEET_SERIALIZED`.
+  - 라이브러리는 함수 내 **지연 import**(app import 가 ingestion extras 미설치에서도 동작).
+- **테스트(외부 파일 in-test 생성)**: 유형별 추출(python-docx/openpyxl/fitz로 최소 파일 생성 후 추출),
+  시트 직렬화 형식, 손상 바이너리 graceful degrade(`ok=False`), 빈/텍스트 없음 처리.
+- **완료 기준**: 4유형 추출 + 실패 격리 단위 테스트 통과, `verify.sh` 통과. 수집기·큐 배선은 TBD 명시.
+- **TBD(후속 featureI-3b)**: 첨부 수집기(다운로드→raw_attachments), `attachment_texts` 적재,
+  Attachment/Chunking Queue(첨부) 배선, chunker `chunk_attachment` 경로 연결.
 
 ## Milestone C — 청킹·임베딩 Worker (FR-003 문서·파일 유형 분류 + Adaptive Chunker / FR-004 Dual Embedding 색인)
 
