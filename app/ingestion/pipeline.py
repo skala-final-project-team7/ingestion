@@ -12,6 +12,9 @@
     run_poc_ingestion(all-fakes 조립).
   - 2026-05-26, ADR 0003 항목 3 운영 wiring — crawl 단계가 worker 와 동일한 jobs 인스턴스를
     공유하도록 연결(CRAWL + UPSERT 가 한 ingestion_jobs 에 기록). PoC 조립에 jobs 추가.
+  - 2026-05-26, featureI-3b — build_poc_components/run_poc_ingestion 에 chunk_attachment_fn
+    주입 파라미터 추가. 첨부를 포함한 crawl→첨부 적재→첨부 청킹→Qdrant 전 체인을 파일 시스템
+    의존성 없이 in-process 로 검증할 수 있다(기본값은 실 chunk_attachment).
 --------------------------------------------------
 [주의] 본 합성은 PoC/테스트용이다. 운영은 crawl 과 chunking_worker 를 큐로 분리해 별도
        스케일링한다(featureI-7b 배포 wiring). run_ingestion_pipeline 은 발행 메시지를
@@ -29,6 +32,7 @@ from app.ingestion.crawler import CrawlRequest, CrawlResult, run_full_crawl
 from app.ingestion.embedder.base import FakeDenseEmbedder, FakeSparseEmbedder
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.chunking_worker import (
+    ChunkAttachmentFn,
     ChunkingMessageResult,
     ChunkingWorkerDeps,
     run_chunking_worker,
@@ -101,22 +105,33 @@ def run_ingestion_pipeline(
     return PipelineResult(crawl=crawl, indexed=indexed)
 
 
-def build_poc_components(*, doc_type_resolver: Any | None = None) -> PocComponents:
-    """all-fakes PoC 구성 요소를 만든다(raw_store 는 crawl·worker 공용으로 공유)."""
+def build_poc_components(
+    *,
+    doc_type_resolver: Any | None = None,
+    chunk_attachment_fn: ChunkAttachmentFn | None = None,
+) -> PocComponents:
+    """all-fakes PoC 구성 요소를 만든다(raw_store 는 crawl·worker 공용으로 공유).
+
+    ``chunk_attachment_fn`` 을 주입하면 첨부 청킹을 파일 시스템 없이 fake 로 구동할 수 있다
+    (미주입 시 실 ``chunk_attachment``). 첨부 없는 본문-only PoC 는 주입하지 않아도 된다.
+    """
     raw_store = FakeRawPageStore()
     publisher = FakeQueuePublisher()
     store = FakeQdrantPoolStore()
     # crawl(CRAWL)·worker(UPSERT)가 공유하는 단일 jobs 인스턴스 (ADR 0003 항목 3).
     jobs = FakeIngestionJobsRepository()
-    chunking_deps = ChunkingWorkerDeps(
-        raw_store=raw_store,
-        dense_embedder=FakeDenseEmbedder(),
-        sparse_embedder=FakeSparseEmbedder(),
-        store=store,
-        cache=FakeEmbeddingCache(),
-        jobs=jobs,
-        doc_type_resolver=doc_type_resolver,
-    )
+    deps_kwargs: dict[str, Any] = {
+        "raw_store": raw_store,
+        "dense_embedder": FakeDenseEmbedder(),
+        "sparse_embedder": FakeSparseEmbedder(),
+        "store": store,
+        "cache": FakeEmbeddingCache(),
+        "jobs": jobs,
+        "doc_type_resolver": doc_type_resolver,
+    }
+    if chunk_attachment_fn is not None:
+        deps_kwargs["chunk_attachment_fn"] = chunk_attachment_fn
+    chunking_deps = ChunkingWorkerDeps(**deps_kwargs)
     return PocComponents(
         raw_store=raw_store,
         publisher=publisher,
@@ -131,9 +146,12 @@ def run_poc_ingestion(
     source: DocumentSourceAdapter,
     *,
     doc_type_resolver: Any | None = None,
+    chunk_attachment_fn: ChunkAttachmentFn | None = None,
 ) -> tuple[PipelineResult, PocComponents]:
     """all-fakes 조립으로 crawl→index 전 체인을 한 번에 구동한다(PoC/통합 테스트 편의)."""
-    components = build_poc_components(doc_type_resolver=doc_type_resolver)
+    components = build_poc_components(
+        doc_type_resolver=doc_type_resolver, chunk_attachment_fn=chunk_attachment_fn
+    )
     result = run_ingestion_pipeline(
         request,
         source=source,

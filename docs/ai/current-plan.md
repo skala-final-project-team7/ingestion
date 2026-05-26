@@ -138,7 +138,7 @@
 - `docs/db-schema.md`에 `raw_pages`/`raw_attachments` 스키마 추가, `docs/ai/working-log.md` 기록.
 - ACL/토큰 전달의 미해결 결정은 문서에 명시(추측 구현 금지).
 
-### featureI-3: 첨부 텍스트 추출기 (FR-002)  📋 진행 중 (추출기 코어)
+### featureI-3: 첨부 텍스트 추출기 (FR-002)  ✅ 추출기 코어 완료 / featureI-3b 첨부 체인 배선 완료
 
 - **목표**: 첨부 바이너리(PDF/Word/Excel/CSV)를 텍스트로 추출하는 **결정론 Pipeline** 구현
   (이미지·도형 제외). Excel/CSV는 시트→자연어 직렬화. self-contained(공급원 무관, bytes→text).
@@ -157,8 +157,35 @@
 - **테스트(외부 파일 in-test 생성)**: 유형별 추출(python-docx/openpyxl/fitz로 최소 파일 생성 후 추출),
   시트 직렬화 형식, 손상 바이너리 graceful degrade(`ok=False`), 빈/텍스트 없음 처리.
 - **완료 기준**: 4유형 추출 + 실패 격리 단위 테스트 통과, `verify.sh` 통과. 수집기·큐 배선은 TBD 명시.
-- **TBD(후속 featureI-3b)**: 첨부 수집기(다운로드→raw_attachments), `attachment_texts` 적재,
-  Attachment/Chunking Queue(첨부) 배선, chunker `chunk_attachment` 경로 연결.
+
+#### featureI-3b: 첨부 청킹 체인 배선  ✅ 구현 완료 (2026-05-26)
+
+> **설계 결정(사용자 승인)**: 첨부 청킹은 **rag 레포 ingestion 그래프와 동일하게 파일 기반
+> `chunk_attachment`** 로 처리한다. 별도 `attachment_texts` 컬렉션은 청킹 경로에 두지 않고,
+> `extracted_text` 는 `raw_attachments` 에 함께 보존한다(analyze_attachment 유효성 게이트 입력).
+> 작업 범위는 **Fake 로 검증 가능한 전부**이며, 실 Confluence 첨부 다운로드 어댑터와 pika
+> consumer 실행 loop 는 인프라 의존 후속(featureI-3c/featureI-7c)으로 남긴다.
+
+- **구현/수정 파일**:
+  - `app/storage/raw_store.py` — `get_attachment(attachment_id)` 읽기 메서드(ABC/Fake/Mongo).
+  - `app/ingestion/workers/chunking_worker.py` — `process_chunking_message` 가 `source_type` 으로
+    본문/첨부 분기. `_process_attachment_message`(raw_attachments 로드 → 부모 ACL 게이트 →
+    `analyze_attachment` → `chunk_attachment_fn` → `index_chunks(attachment_download_urls)`).
+    `AttachmentNotFoundError`, `ChunkAttachmentFn`, `ChunkingWorkerDeps.chunk_attachment_fn`(주입),
+    `ChunkingMessageResult.attachment_id`, `_record(stage, attachment_id)` 확장.
+  - `app/ingestion/crawler.py` — `build_attachment_chunking_message` + `run_full_crawl` 이
+    `page.attachments` 적재(`save_attachment`) + 첨부 `content.chunking` 발행. `CrawlResult.
+    failed_attachment_ids`(첨부 단위 격리), 첨부 CRAWL 잡 기록.
+  - `app/ingestion/pipeline.py` — `build_poc_components`/`run_poc_ingestion` 에
+    `chunk_attachment_fn` 주입(파일 시스템 없이 첨부 전 체인 e2e).
+  - `docs/db-schema.md` §2.7 `raw_attachments` 필드·적재 흐름 확정.
+- **테스트**: `tests/ingestion/test_chunking_worker.py`(첨부 청킹/ACL 상속/미지원·저품질/암호화·
+  기타 ValueError 격리/멱등성/누락 첨부·부모/혼합 디스패치), `test_crawler.py`(첨부 적재·발행·
+  잡 기록·실패 격리), `test_pipeline_e2e.py`(첨부 전 체인 + 멱등성), `test_raw_store.py`(get_attachment).
+  외부 파일 의존성은 `chunk_attachment_fn` fake 주입으로 회피. 검증 ruff/format/py_compile 통과
+  (전체 pytest·`verify.sh` 는 Mac/3.11 — 샌드박스 StrEnum 제약).
+- **TBD(후속)**: 실 Confluence 첨부 **다운로드 어댑터**(바이너리 수집 → `local_path`/
+  `extracted_text` 채움, 인프라 의존), pika consumer/publisher 실행 loop(featureI-7c 와 공통).
 
 ## Milestone C — 청킹·임베딩 Worker (FR-003 문서·파일 유형 분류 + Adaptive Chunker / FR-004 Dual Embedding 색인)
 

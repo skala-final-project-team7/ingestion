@@ -13,13 +13,32 @@ from app.adapters.base import ActiveIds, ChangeEvent, DocumentSourceAdapter
 from app.ingestion.crawler import CrawlRequest, run_full_crawl
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import FakeQueuePublisher
-from app.schemas.enums import IngestionStage, IngestionStatus
-from app.schemas.page_object import PageObject
+from app.schemas.enums import ExtractedFormat, IngestionStage, IngestionStatus
+from app.schemas.page_object import Attachment, PageObject
 from app.storage.jobs import FakeIngestionJobsRepository
 from app.storage.raw_store import FakeRawPageStore
 
 
-def _page(page_id: str, *, space_key: str = "ENG", version: int = 1) -> PageObject:
+def _attachment(attachment_id: str, *, page_id: str) -> Attachment:
+    return Attachment(
+        attachment_id=attachment_id,
+        filename=f"{attachment_id}.pdf",
+        mime_type="application/pdf",
+        extracted_text="x" * 250,
+        extracted_format=ExtractedFormat.RAW_TEXT,
+        download_url=f"https://confluence.example/download/{attachment_id}",
+        parent_page_id=page_id,
+        last_modified=datetime.fromisoformat("2026-05-14T01:00:00+00:00"),
+    )
+
+
+def _page(
+    page_id: str,
+    *,
+    space_key: str = "ENG",
+    version: int = 1,
+    attachments: list[Attachment] | None = None,
+) -> PageObject:
     return PageObject(
         page_id=page_id,
         space_key=space_key,
@@ -30,6 +49,7 @@ def _page(page_id: str, *, space_key: str = "ENG", version: int = 1) -> PageObje
         allowed_groups=[f"space:{space_key}"],
         allowed_users=[],
         webui_link=f"/wiki/{page_id}",
+        attachments=attachments or [],
     )
 
 
@@ -159,3 +179,88 @@ def test_run_full_crawl_does_not_record_failed_pages() -> None:
     # 실패 페이지는 잡 레코드를 남기지 않는다(성공 페이지만 CRAWL 기록).
     assert result.failed_page_ids == ["page-bad"]
     assert [r.page_id for r in jobs.records] == ["page-ok"]
+
+
+# --- 첨부 수집·발행 (featureI-3b) ---
+
+
+def test_run_full_crawl_persists_attachments_and_publishes_attachment_messages() -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    page = _page("page-1", version=2, attachments=[_attachment("att-1", page_id="page-1")])
+    source = _FakeSource([page])
+
+    result = run_full_crawl(
+        CrawlRequest(space_key="ENG"),
+        raw_store=store,
+        publisher=publisher,
+        adapter=source,
+    )
+
+    assert result.pages_collected == 1
+    assert result.attachments_collected == 1
+    assert result.failed_attachment_ids == []
+    assert set(store.attachments) == {"att-1"}
+
+    # 본문 메시지 + 첨부 메시지가 같은 content.chunking 큐로 발행된다.
+    assert [m.routing_key for m in publisher.messages] == [QUEUE_CHUNKING, QUEUE_CHUNKING]
+    assert publisher.messages[1].body == {
+        "page_id": "page-1",
+        "attachment_id": "att-1",
+        "space_key": "ENG",
+        "version_number": 2,
+        "source_type": "attachment",
+    }
+
+
+def test_run_full_crawl_records_crawl_jobs_for_attachments() -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    jobs = FakeIngestionJobsRepository()
+    page = _page("page-1", attachments=[_attachment("att-1", page_id="page-1")])
+    source = _FakeSource([page])
+
+    run_full_crawl(
+        CrawlRequest(space_key="ENG"),
+        raw_store=store,
+        publisher=publisher,
+        adapter=source,
+        jobs=jobs,
+    )
+
+    # 페이지 CRAWL 1건 + 첨부 CRAWL 1건(attachment_id 채워짐).
+    assert [r.attachment_id for r in jobs.records] == [None, "att-1"]
+    assert all(r.stage is IngestionStage.CRAWL for r in jobs.records)
+    assert all(r.status is IngestionStatus.SUCCESS for r in jobs.records)
+
+
+def test_run_full_crawl_isolates_failed_attachment() -> None:
+    class _RaisingStore(FakeRawPageStore):
+        def save_attachment(self, attachment: Attachment) -> None:
+            if attachment.attachment_id == "att-bad":
+                raise RuntimeError("mongo down")
+            super().save_attachment(attachment)
+
+    store = _RaisingStore()
+    publisher = FakeQueuePublisher()
+    page = _page(
+        "page-1",
+        attachments=[
+            _attachment("att-ok", page_id="page-1"),
+            _attachment("att-bad", page_id="page-1"),
+        ],
+    )
+    source = _FakeSource([page])
+
+    result = run_full_crawl(
+        CrawlRequest(space_key="ENG"),
+        raw_store=store,
+        publisher=publisher,
+        adapter=source,
+    )
+
+    # 첨부 실패는 페이지·다른 첨부로 전파하지 않는다(graceful degrade).
+    assert result.pages_collected == 1
+    assert result.attachments_collected == 1
+    assert result.failed_attachment_ids == ["att-bad"]
+    assert set(store.attachments) == {"att-ok"}

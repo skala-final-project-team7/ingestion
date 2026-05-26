@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import datetime
 
+from app.ingestion.chunker import ChunkDraft, build_attachment_metadata
 from app.ingestion.embedder.base import (
     FakeDenseEmbedder,
     FakeSparseEmbedder,
@@ -17,6 +18,7 @@ from app.ingestion.embedder.base import (
 )
 from app.ingestion.vector_store import POOL_NAMES
 from app.ingestion.workers.chunking_worker import (
+    AttachmentNotFoundError,
     ChunkingWorkerDeps,
     RawPageNotFoundError,
     process_chunking_message,
@@ -24,8 +26,14 @@ from app.ingestion.workers.chunking_worker import (
 )
 from app.ingestion.workers.consumer import FakeMessageConsumer
 from app.schemas.chunk import Chunk
-from app.schemas.enums import IngestionStage, IngestionStatus
-from app.schemas.page_object import PageObject
+from app.schemas.enums import (
+    AttachmentType,
+    ExtractedFormat,
+    IngestionStage,
+    IngestionStatus,
+    SourceType,
+)
+from app.schemas.page_object import Attachment, PageObject
 from app.storage.jobs import FakeIngestionJobsRepository
 from app.storage.mongo_cache import FakeEmbeddingCache
 from app.storage.raw_store import FakeRawPageStore
@@ -168,4 +176,241 @@ def test_run_worker_processes_all_consumer_messages() -> None:
     results = run_chunking_worker(consumer, deps)
 
     assert [r.page_id for r in results] == ["page-1", "page-2"]
+    assert all(r.status is IngestionStatus.SUCCESS for r in results)
+
+
+# --- 첨부 청킹 경로 (featureI-3b) ---
+
+# analyze_attachment 의 텍스트 유효성(>= 200자) 통과를 위한 충분히 긴 정상 텍스트.
+_LONG_TEXT = (
+    "This runbook describes the database failover procedure in detail. Follow each "
+    "numbered step carefully and verify the health checks between steps. Escalate to the "
+    "on-call engineer if replication lag exceeds the configured threshold during failover."
+)
+
+
+def _attachment(
+    attachment_id: str = "att-1",
+    *,
+    page_id: str = "page-1",
+    filename: str = "runbook.pdf",
+    mime: str = "application/pdf",
+    text: str = _LONG_TEXT,
+) -> Attachment:
+    return Attachment(
+        attachment_id=attachment_id,
+        filename=filename,
+        mime_type=mime,
+        extracted_text=text,
+        extracted_format=ExtractedFormat.RAW_TEXT,
+        download_url=f"https://confluence.example/download/{attachment_id}",
+        parent_page_id=page_id,
+        last_modified=datetime.fromisoformat("2026-05-14T01:00:00+00:00"),
+    )
+
+
+def _fake_chunk_attachment(
+    attachment: Attachment, page: PageObject, attachment_type: AttachmentType
+) -> list[Chunk]:
+    """파일 시스템 없이 결정론 첨부 청크 1건을 만든다(실 chunk_attachment 대체 주입)."""
+    draft = ChunkDraft(text="Failover step body text.", section_header="Failover", is_atomic=False)
+    meta = build_attachment_metadata(page, attachment, draft, 0, attachment_type)
+    return [Chunk(text=draft.text, metadata=meta)]
+
+
+def _att_deps(
+    raw: FakeRawPageStore,
+    *,
+    chunk_fn=_fake_chunk_attachment,
+    jobs: FakeIngestionJobsRepository | None = None,
+    cache: FakeEmbeddingCache | None = None,
+    qdrant: _FakeQdrantStore | None = None,
+) -> ChunkingWorkerDeps:
+    return ChunkingWorkerDeps(
+        raw_store=raw,
+        dense_embedder=FakeDenseEmbedder(),
+        sparse_embedder=FakeSparseEmbedder(),
+        store=qdrant or _FakeQdrantStore(),
+        cache=cache or FakeEmbeddingCache(),
+        jobs=jobs,
+        chunk_attachment_fn=chunk_fn,
+    )
+
+
+_ATT_MSG = {"page_id": "page-1", "attachment_id": "att-1", "source_type": "attachment"}
+
+
+def test_attachment_message_chunks_and_upserts() -> None:
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_attachment(_attachment("att-1", page_id="page-1"))
+    qdrant = _FakeQdrantStore()
+    jobs = FakeIngestionJobsRepository()
+    deps = _att_deps(raw, jobs=jobs, qdrant=qdrant)
+
+    result = process_chunking_message(_ATT_MSG, deps)
+
+    assert result.status is IngestionStatus.SUCCESS
+    assert result.attachment_id == "att-1"
+    assert result.chunks == 1
+    assert result.upserted == 1
+    for pool in POOL_NAMES:
+        assert len(qdrant.upserts[pool]) == 1
+    # ingestion_jobs 에 첨부 UPSERT SUCCESS 1건 (attachment_id 채워짐).
+    assert len(jobs.records) == 1
+    assert jobs.records[0].stage is IngestionStage.UPSERT
+    assert jobs.records[0].status is IngestionStatus.SUCCESS
+    assert jobs.records[0].page_id == "page-1"
+    assert jobs.records[0].attachment_id == "att-1"
+
+
+def test_attachment_inherits_parent_acl_and_is_blocked_when_missing() -> None:
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1", acl=False))
+    raw.save_attachment(_attachment("att-1", page_id="page-1"))
+    qdrant = _FakeQdrantStore()
+    jobs = FakeIngestionJobsRepository()
+    deps = _att_deps(raw, jobs=jobs, qdrant=qdrant)
+
+    result = process_chunking_message(_ATT_MSG, deps)
+
+    assert result.status is IngestionStatus.INVALID_ACL
+    assert result.upserted == 0
+    assert all(qdrant.upserts[pool] == [] for pool in POOL_NAMES)
+    assert jobs.records[0].status is IngestionStatus.INVALID_ACL
+    assert jobs.records[0].attachment_id == "att-1"
+
+
+def test_attachment_unsupported_type_recorded_and_skipped() -> None:
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_attachment(
+        _attachment("att-zip", page_id="page-1", filename="data.zip", mime="application/zip")
+    )
+    qdrant = _FakeQdrantStore()
+    jobs = FakeIngestionJobsRepository()
+    deps = _att_deps(raw, jobs=jobs, qdrant=qdrant)
+
+    result = process_chunking_message(
+        {"page_id": "page-1", "attachment_id": "att-zip", "source_type": "attachment"}, deps
+    )
+
+    assert result.status is IngestionStatus.UNSUPPORTED_ATTACH_TYPE
+    assert result.upserted == 0
+    assert all(qdrant.upserts[pool] == [] for pool in POOL_NAMES)
+    # 분석 단계에서 걸렸으므로 stage 는 ANALYZE.
+    assert jobs.records[0].stage is IngestionStage.ANALYZE
+    assert jobs.records[0].status is IngestionStatus.UNSUPPORTED_ATTACH_TYPE
+
+
+def test_attachment_low_quality_text_recorded_and_skipped() -> None:
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_attachment(_attachment("att-low", page_id="page-1", text="too short"))
+    jobs = FakeIngestionJobsRepository()
+    deps = _att_deps(raw, jobs=jobs)
+
+    result = process_chunking_message(
+        {"page_id": "page-1", "attachment_id": "att-low", "source_type": "attachment"}, deps
+    )
+
+    assert result.status is IngestionStatus.LOW_QUALITY_ATTACH
+    assert result.upserted == 0
+    assert jobs.records[0].stage is IngestionStage.ANALYZE
+    assert jobs.records[0].status is IngestionStatus.LOW_QUALITY_ATTACH
+
+
+def test_attachment_encrypted_pdf_value_error_isolated() -> None:
+    def _raise_encrypted(*_args: object) -> list[Chunk]:
+        raise ValueError("ATTACH_ENCRYPTED: 암호화된 PDF는 처리할 수 없습니다")
+
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_attachment(_attachment("att-1", page_id="page-1"))
+    jobs = FakeIngestionJobsRepository()
+    deps = _att_deps(raw, chunk_fn=_raise_encrypted, jobs=jobs)
+
+    result = process_chunking_message(_ATT_MSG, deps)
+
+    assert result.status is IngestionStatus.ATTACH_ENCRYPTED
+    assert result.upserted == 0
+    assert jobs.records[0].stage is IngestionStage.CHUNK
+    assert jobs.records[0].status is IngestionStatus.ATTACH_ENCRYPTED
+
+
+def test_attachment_other_value_error_maps_to_unsupported() -> None:
+    def _raise_other(*_args: object) -> list[Chunk]:
+        raise ValueError("지원하지 않는 첨부 유형")
+
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_attachment(_attachment("att-1", page_id="page-1"))
+    deps = _att_deps(raw, chunk_fn=_raise_other)
+
+    result = process_chunking_message(_ATT_MSG, deps)
+
+    assert result.status is IngestionStatus.UNSUPPORTED_ATTACH_TYPE
+    assert result.upserted == 0
+
+
+def test_attachment_reindex_same_version_is_idempotent_skip() -> None:
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_attachment(_attachment("att-1", page_id="page-1"))
+    cache = FakeEmbeddingCache()
+
+    first = process_chunking_message(_ATT_MSG, _att_deps(raw, cache=cache))
+    assert first.upserted == 1
+
+    second = process_chunking_message(_ATT_MSG, _att_deps(raw, cache=cache))
+    assert second.status is IngestionStatus.SUCCESS
+    assert second.upserted == 0
+    assert second.skipped == first.upserted
+
+
+def test_missing_raw_attachment_raises() -> None:
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))  # 부모 페이지는 있지만 첨부는 없음.
+    deps = _att_deps(raw)
+    try:
+        process_chunking_message(_ATT_MSG, deps)
+    except AttachmentNotFoundError as exc:
+        assert "att-1" in str(exc)
+    else:  # pragma: no cover - 실패 시에만
+        raise AssertionError("AttachmentNotFoundError expected")
+
+
+def test_attachment_message_missing_parent_page_raises() -> None:
+    raw = FakeRawPageStore()
+    raw.save_attachment(_attachment("att-1", page_id="ghost"))  # 부모 페이지 없음.
+    deps = _att_deps(raw)
+    try:
+        process_chunking_message(
+            {"page_id": "ghost", "attachment_id": "att-1", "source_type": "attachment"}, deps
+        )
+    except RawPageNotFoundError as exc:
+        assert "ghost" in str(exc)
+    else:  # pragma: no cover - 실패 시에만
+        raise AssertionError("RawPageNotFoundError expected")
+
+
+def test_run_worker_dispatches_page_and_attachment_messages() -> None:
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_attachment(_attachment("att-1", page_id="page-1"))
+    consumer = FakeMessageConsumer(
+        messages=[
+            {"page_id": "page-1"},  # source_type 미지정 → 본문 경로(기본 page).
+            {
+                "page_id": "page-1",
+                "attachment_id": "att-1",
+                "source_type": SourceType.ATTACHMENT.value,
+            },
+        ]
+    )
+    deps = _att_deps(raw)
+
+    results = run_chunking_worker(consumer, deps)
+
+    assert [r.attachment_id for r in results] == [None, "att-1"]
     assert all(r.status is IngestionStatus.SUCCESS for r in results)
