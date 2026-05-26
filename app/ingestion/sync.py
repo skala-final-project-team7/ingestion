@@ -21,10 +21,22 @@
 --------------------------------------------------
 """
 
-from dataclasses import dataclass
+import shutil
+import tempfile
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Protocol
 
+from app.adapters.atlassian import synthesize_space_acl
 from app.adapters.base import DocumentSourceAdapter
+from app.adapters.json_fixture import parse_atlassian_datetime
+from app.ingestion.crawler import build_chunking_message
+from app.ingestion.workers import QUEUE_CHUNKING
+from app.ingestion.workers.publisher import QueuePublisher
+from app.schemas.page_object import PageObject
 from app.storage.qdrant_client import QdrantPoolStore
+from app.storage.raw_store import RawPageStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,3 +107,171 @@ def reconcile_deletions(
         deleted_pages=deleted_pages,
         deleted_attachments=deleted_attachments,
     )
+
+
+# ==========================================================================
+# Delta Sync 어댑터 [Agent 오케스트레이션] — vendored Data Sync Agent (FR-005)
+# --------------------------------------------------------------------------
+# featureI-6, 2026-05-26: 저장소 루트에 무수정 vendoring 된 Data Sync Agent
+# (``data_sync_agent``)를 in-process 블랙박스로 구동해 Delta Sync 를 잇는다. 변경(new/
+# updated) 페이지는 표준 PageObject 로 변환해 raw_pages 적재 + Chunking Queue 재투입
+# (FR-001~004 동일 파이프라인), 삭제 후보(deleted_candidate)는 page_id 목록으로 surface
+# 한다(확정 삭제 아님 — requires_confirmation). 위 ``reconcile_deletions`` 는 무수정 보존.
+#
+# 3중 삭제 동기화 중 Reconciliation 은 위 함수, Delta Sync 의 deleted_candidate 감지는
+# 아래 어댑터가 담당한다. Trash API / Webhook 은 에이전트 MVP·본 레포 모두 제외(TBD).
+# 실제 Qdrant soft_delete 실행은 store 를 소유한 Sync Worker(featureI-5 후속)의 책임이라
+# 본 어댑터는 후보 page_id 만 반환한다(추측 구현 금지).
+# ==========================================================================
+
+
+@dataclass
+class DeltaSyncRequest:
+    """Delta Sync 트리거 입력(주기 스케줄러 / 수동)."""
+
+    previous_snapshot_path: str
+    space_key: str | None = None
+    # PoC: BFF→Ingestion 전달(미확정 TBD). 로그·메시지 페이로드에 남기지 않는다.
+    access_token: str | None = None
+    cloud_id: str | None = None
+
+
+@dataclass
+class DeltaSyncResult:
+    """Delta Sync 잡 결과 리포트."""
+
+    changed_pages: int = 0
+    deleted_candidate_page_ids: list[str] = field(default_factory=list)
+    failed_items: int = 0
+    elapsed_ms: int = 0
+
+
+class _DeltaSyncWorkflowRunner(Protocol):
+    """vendored delta sync workflow 호출 시그니처 — 테스트 주입 지점."""
+
+    def __call__(
+        self,
+        *,
+        config: Any,
+        client: Any | None = None,
+        snapshot_repository: Any | None = None,
+        force_sequential: bool = False,
+    ) -> Any:
+        """Delta sync workflow 를 실행하고 changed/deleted 결과를 반환한다."""
+
+
+def run_delta_sync(
+    request: DeltaSyncRequest,
+    *,
+    raw_store: RawPageStore,
+    publisher: QueuePublisher,
+    client: Any | None = None,
+    snapshot_repository: Any | None = None,
+    workflow_runner: _DeltaSyncWorkflowRunner | None = None,
+    force_sequential: bool = True,
+) -> DeltaSyncResult:
+    """Delta Sync 실행 (FR-005).
+
+    흐름: 1) vendored Data Sync Agent 워크플로를 in-process 실행(블랙박스) → 2) 변경
+    문서(new/updated)를 표준 PageObject 로 변환 → 3) ``raw_pages`` 적재 + Chunking Queue
+    재투입 → 4) 삭제 후보 page_id 집계 → 5) ``DeltaSyncResult`` 반환.
+
+    Args:
+        request: Delta Sync 트리거 입력(previous snapshot 경로 + 주입 자격증명).
+        raw_store: 변경 페이지 ``raw_pages`` 적재 어댑터(테스트는 ``FakeRawPageStore``).
+        publisher: Chunking Queue 발행 publisher(테스트는 ``FakeQueuePublisher``).
+        client: vendored 에이전트의 Confluence metadata client. None 이면 에이전트가
+            운영용 client 를 생성한다. 테스트는 fake client 를 주입한다.
+        snapshot_repository: vendored snapshot repository. None 이면 에이전트가 로컬
+            파일 repository 를 생성한다.
+        workflow_runner: delta sync workflow 호출자. 기본값은 vendored
+            ``run_data_sync_workflow``. 테스트에서 교체 가능.
+        force_sequential: True(기본)면 LangGraph 미사용 sequential 실행으로 결정론 보장.
+
+    Returns:
+        변경·삭제 후보 집계를 담은 ``DeltaSyncResult``.
+
+    Note:
+        에이전트는 산출물을 로컬 파일로 쓰므로 임시 디렉토리로 우회한다(즉시 정리).
+        삭제 후보의 실제 Qdrant soft_delete 는 store 를 소유한 Worker 의 책임이라 본
+        함수는 후보 page_id 만 반환한다.
+    """
+    runner = workflow_runner or _default_delta_workflow_runner()
+    started = time.monotonic()
+    output_dir = tempfile.mkdtemp(prefix="sync-agent-")
+    try:
+        config = _build_sync_config(request, output_dir=output_dir)
+        result = runner(
+            config=config,
+            client=client,
+            snapshot_repository=snapshot_repository,
+            force_sequential=force_sequential,
+        )
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+    out = DeltaSyncResult()
+    for changed in result.changed_documents:
+        if request.space_key and changed.space.get("space_key") != request.space_key:
+            continue
+        page = _changed_document_to_page_object(changed)
+        raw_store.save_page(page)
+        publisher.publish(routing_key=QUEUE_CHUNKING, message=build_chunking_message(page))
+        out.changed_pages += 1
+
+    out.deleted_candidate_page_ids = sorted(item.page_id for item in result.deleted_items)
+    out.failed_items = len(result.failed_items)
+    out.elapsed_ms = int((time.monotonic() - started) * 1000)
+    return out
+
+
+def _build_sync_config(request: DeltaSyncRequest, *, output_dir: str) -> Any:
+    from data_sync_agent.config import DataSyncConfig
+
+    return DataSyncConfig(
+        cloud_id=request.cloud_id or "",
+        access_token=request.access_token or "",
+        output_dir=output_dir,
+        previous_snapshot=request.previous_snapshot_path,
+    )
+
+
+def _default_delta_workflow_runner() -> _DeltaSyncWorkflowRunner:
+    """기본 delta sync workflow runner — vendored workflow 를 지연 import 한다."""
+    from data_sync_agent.workflow import run_data_sync_workflow
+
+    runner: _DeltaSyncWorkflowRunner = run_data_sync_workflow
+    return runner
+
+
+def _changed_document_to_page_object(changed: Any) -> PageObject:
+    """vendored ChangedDocument(dict 기반 space/page/body) → 표준 PageObject 변환.
+
+    Full Crawl 어댑터와 동일 매핑·동일 PoC ACL 합성을 사용한다(공급원 무관 표준 계약).
+    """
+    space = changed.space
+    page = changed.page
+    body = changed.body
+    space_key = str(space.get("space_key") or "")
+    allowed_groups, allowed_users = synthesize_space_acl(space_key)
+    return PageObject(
+        page_id=str(page["page_id"]),
+        space_key=space_key,
+        title=str(page.get("title") or ""),
+        body_html=str(body.get("storage_html") or ""),
+        version_number=int(page.get("version_number") or 0),
+        last_modified=_parse_changed_last_modified(str(page.get("last_modified_at") or "")),
+        allowed_groups=allowed_groups,
+        allowed_users=allowed_users,
+        webui_link=str(page.get("page_url") or ""),
+        labels=[],
+        ancestors=[],
+        attachments=[],
+    )
+
+
+def _parse_changed_last_modified(value: str) -> datetime:
+    """ChangedDocument ``last_modified_at``(ISO 8601) → datetime(빈 값은 명시 거부)."""
+    if not value:
+        raise ValueError("last_modified_at is required for PageObject mapping")
+    return parse_atlassian_datetime(value)

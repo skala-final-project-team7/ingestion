@@ -1,0 +1,28 @@
+{
+  "space-fixture": [
+    {
+      "_links": {
+        "webui": "https://example.invalid/wiki/pages/ok-page"
+      },
+      "id": "ok-page",
+      "status": "current",
+      "title": "Synthetic OK Page",
+      "version": {
+        "createdAt": "2026-05-15T01:00:00Z",
+        "number": 1
+      }
+    },
+    {
+      "_links": {
+        "webui": "https://example.invalid/wiki/pages/failure-page"
+      },
+      "id": "failure-page",
+      "status": "current",
+      "title": "Synthetic Failure Page",
+      "version": {
+        "createdAt": "2026-05-15T01:10:00Z",
+        "number": 1
+      }
+    }
+  ]
+}

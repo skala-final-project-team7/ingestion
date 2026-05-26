@@ -47,17 +47,31 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
 ]
+# Vendored Data Ingestion / Data Sync Agent 의 LangGraph workflow (선택). 미설치 시 두
+# 에이전트 모두 sequential fallback 으로 동작하므로 필수 의존성은 아니다(원본 무수정 vendoring).
+agents = [
+    "langgraph>=0.2,<0.3",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+# vendored 에이전트 패키지를 저장소 루트에서 import 가능하게 노출(rag 미러). 원본 무수정.
+include = ["app*", "data_ingestion_agent*", "data_sync_agent*"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# vendored 에이전트 원본은 우리 컨벤션(line-length 100 등)에 맞추지 않고 무수정 보존한다.
+# 패키지 본체 + tests/<agent>/ 아래 무수정 테스트 트리를 모두 lint 대상에서 제외한다.
+extend-exclude = [
+    "data_ingestion_agent",
+    "data_sync_agent",
+    "tests/data_ingestion_agent",
+    "tests/data_sync_agent",
+]
 
 [tool.ruff.lint]
 # E/W: pycodestyle, F: pyflakes, I: isort, B: bugbear, UP: pyupgrade
@@ -70,3 +84,17 @@ asyncio_mode = "auto"
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
+# vendored 에이전트(패키지 + 무수정 테스트 트리)는 타입체크 대상에서 제외(원본 무수정 보존).
+exclude = [
+    "^data_ingestion_agent/",
+    "^data_sync_agent/",
+    "^tests/data_ingestion_agent/",
+    "^tests/data_sync_agent/",
+]
+
+# ``mypy app`` 이 어댑터를 통해 vendored 모듈을 import-follow 하더라도 원본의 타입 오류를
+# 보고하지 않는다(vendored 무수정 보존 — 우리 코드는 vendored 반환을 ``Any`` 로 다룬다).
+[[tool.mypy.overrides]]
+module = ["data_ingestion_agent.*", "data_sync_agent.*"]
+follow_imports = "skip"
+ignore_errors = true

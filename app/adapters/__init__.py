@@ -12,8 +12,9 @@ OAuth 인증·access_token 관리는 Authorization Server(Spring) 책임이며, 
 - base.py          DocumentSourceAdapter 추상 인터페이스 + ActiveIds / ChangeEvent
 - json_fixture.py  JsonFixtureSourceAdapter — samples/*.json 읽기 (로컬 개발·테스트용) [구현 완료]
 - factory.py       build_source_adapter — Settings.source_type 기반 어댑터 생성 [구현 완료]
-- atlassian.py     AtlassianSourceAdapter — atlassian-python-api로 Confluence REST 직접 호출
-                   [미구현 — access_token/cloudid 전달 경로 확정 후. docs/ai/current-plan.md]
+- atlassian.py     AtlassianSourceAdapter — vendored Data Ingestion Agent(FR-001)를
+                   in-process 호출(블랙박스)하고 ProcessedDocument→PageObject 로 변환
+                   [구현 완료 — featureI-6. access_token/cloud_id 전달 경로는 TBD placeholder]
 """
 
 from app.adapters.base import ActiveIds, ChangeEvent, DocumentSourceAdapter

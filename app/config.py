@@ -45,8 +45,15 @@ class Settings(BaseSettings):
     # --- 데이터 공급원 (docs/atlassian-api.md) ---
     source_type: str = "json_fixture"  # json_fixture | atlassian
     samples_dir: str = "samples"
-    # NOTE: access_token / cloudid 전달 경로는 미정(TBD) — docs/ai/current-plan.md 참조
+    # NOTE: access_token / cloudid 전달 경로는 미정(TBD) — docs/ai/current-plan.md 참조.
+    # 아래는 PoC placeholder(env 주입). source_type="atlassian" 시 vendored Data Ingestion
+    # Agent 에 전달된다. access_token 은 SecretStr 로 보관해 로그·직렬화에 노출하지 않는다.
     atlassian_api_base_url: str = "https://api.atlassian.com"
+    atlassian_cloud_id: str = ""
+    atlassian_access_token: SecretStr = SecretStr("")
+    atlassian_request_delay_seconds: float = 0.3
+    atlassian_max_retries: int = 3
+    atlassian_timeout_seconds: int = 20
 
     # --- Qdrant Multi-Pool Vector Store ---
     qdrant_host: str = "localhost"

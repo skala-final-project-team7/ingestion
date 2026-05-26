@@ -1,0 +1,185 @@
+{
+  "spaces": [
+    {
+      "id": "space-eng",
+      "key": "ENG",
+      "name": "Engineering Synthetic Space",
+      "homepageId": "home-eng"
+    },
+    {
+      "id": "space-empty",
+      "key": "EMPTY",
+      "name": "Empty Synthetic Space",
+      "homepageId": "home-empty"
+    },
+    {
+      "id": "space-missing-home",
+      "key": "MISS",
+      "name": "Missing Homepage Synthetic Space"
+    },
+    {
+      "id": "space-ops",
+      "key": "OPS",
+      "name": "Operations Synthetic Space",
+      "homepageId": "home-ops"
+    }
+  ],
+  "descendants_by_homepage": {
+    "home-eng": [
+      {
+        "id": "page-runbook",
+        "parentId": "home-eng",
+        "depth": 1,
+        "position": 0
+      },
+      {
+        "id": "page-macro-attachment",
+        "parentId": "home-eng",
+        "depth": 1,
+        "position": 1
+      },
+      {
+        "id": "page-denied",
+        "parentId": "home-eng",
+        "depth": 1,
+        "position": 2
+      }
+    ],
+    "home-empty": [],
+    "home-ops": [
+      {
+        "id": "page-ops",
+        "parentId": "home-ops",
+        "depth": 1,
+        "position": 0
+      }
+    ]
+  },
+  "page_details": {
+    "page-runbook": {
+      "id": "page-runbook",
+      "title": "Synthetic Runbook",
+      "status": "current",
+      "body": {
+        "storage": {
+          "value": "<h1>Synthetic Runbook</h1><p>Restart the synthetic service.</p><ul><li>Check synthetic logs</li><li>Confirm synthetic status</li></ul>"
+        }
+      },
+      "createdAt": "2026-05-14T00:00:00Z",
+      "version": {
+        "number": 2,
+        "createdAt": "2026-05-14T00:30:00Z"
+      },
+      "_links": {
+        "webui": "/wiki/spaces/ENG/pages/page-runbook/Synthetic+Runbook"
+      }
+    },
+    "page-macro-attachment": {
+      "id": "page-macro-attachment",
+      "title": "Synthetic Macro Attachment Page",
+      "status": "current",
+      "body": {
+        "storage": {
+          "value": "<p>Before unsupported content</p><ac:structured-macro ac:name=\"panel\"><ac:parameter ac:name=\"title\">Synthetic macro body</ac:parameter></ac:structured-macro><ac:image><ri:attachment ri:filename=\"synthetic-diagram.png\" /></ac:image><ri:attachment ri:filename=\"synthetic-reference.pdf\" /><p>After unsupported content</p>"
+        }
+      },
+      "createdAt": "2026-05-14T01:00:00Z",
+      "version": {
+        "number": 5,
+        "createdAt": "2026-05-14T01:30:00Z"
+      },
+      "_links": {
+        "webui": "/wiki/spaces/ENG/pages/page-macro-attachment/Synthetic+Macro"
+      }
+    },
+    "page-ops": {
+      "id": "page-ops",
+      "title": "Synthetic Operations Page",
+      "status": "current",
+      "body": {
+        "storage": {
+          "value": "<h2>Operations Checklist</h2><table><tr><th>Step</th><th>Status</th></tr><tr><td>Prepare</td><td>Ready</td></tr></table><p>Use synthetic examples only.</p>"
+        }
+      },
+      "createdAt": "2026-05-14T02:00:00Z",
+      "version": {
+        "number": 1,
+        "createdAt": "2026-05-14T02:30:00Z"
+      },
+      "_links": {
+        "webui": "/wiki/spaces/OPS/pages/page-ops/Synthetic+Operations"
+      }
+    }
+  },
+  "page_detail_failures": {
+    "page-denied": {
+      "status_code": 403,
+      "error_type": "permission_failure",
+      "message": "Synthetic permission failure.",
+      "retryable": false,
+      "item_level": true,
+      "attempt_count": 1
+    }
+  },
+  "boundary_empty_and_long": {
+    "spaces": [
+      {
+        "id": "space-boundary",
+        "key": "BOUND",
+        "name": "Boundary Synthetic Space",
+        "homepageId": "home-boundary"
+      }
+    ],
+    "descendants_by_homepage": {
+      "home-boundary": [
+        {
+          "id": "page-empty-body",
+          "parentId": "home-boundary",
+          "depth": 1,
+          "position": 0
+        },
+        {
+          "id": "page-long-body",
+          "parentId": "home-boundary",
+          "depth": 1,
+          "position": 1
+        }
+      ]
+    },
+    "page_details": {
+      "page-empty-body": {
+        "id": "page-empty-body",
+        "title": "Synthetic Empty Body",
+        "status": "current",
+        "body": {},
+        "createdAt": "2026-05-14T03:00:00Z",
+        "version": {
+          "number": 1,
+          "createdAt": "2026-05-14T03:30:00Z"
+        },
+        "_links": {
+          "webui": "/wiki/spaces/BOUND/pages/page-empty-body/Synthetic+Empty"
+        }
+      },
+      "page-long-body": {
+        "id": "page-long-body",
+        "title": "Synthetic Long Body",
+        "status": "current",
+        "body": {
+          "storage": {
+            "value": "<h1>Synthetic Long Body</h1><p>synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment synthetic paragraph segment</p>"
+          }
+        },
+        "createdAt": "2026-05-14T04:00:00Z",
+        "version": {
+          "number": 1,
+          "createdAt": "2026-05-14T04:30:00Z"
+        },
+        "_links": {
+          "webui": "/wiki/spaces/BOUND/pages/page-long-body/Synthetic+Long"
+        }
+      }
+    },
+    "page_detail_failures": {}
+  }
+}

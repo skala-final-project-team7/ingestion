@@ -24,6 +24,10 @@ class UnsupportedSourceTypeError(ValueError):
     """``Settings.source_type``이 지원하지 않는 값일 때 발생한다."""
 
 
+class MissingAtlassianCredentialsError(ValueError):
+    """``source_type="atlassian"``인데 cloud_id/access_token placeholder가 비어 있을 때."""
+
+
 def build_source_adapter(settings: Settings | None = None) -> DocumentSourceAdapter:
     """``Settings.source_type``에 따라 Document Source Adapter를 생성한다.
 
@@ -35,18 +39,24 @@ def build_source_adapter(settings: Settings | None = None) -> DocumentSourceAdap
 
     Raises:
         UnsupportedSourceTypeError: ``source_type``이 지원하지 않는 값일 때.
-        NotImplementedError: ``atlassian`` 어댑터가 아직 구현되지 않은 단계(현재 PoC).
+        MissingAtlassianCredentialsError: ``atlassian``인데 placeholder 자격증명이 빈 경우.
     """
     resolved = settings or get_settings()
     source_type = resolved.source_type.lower()
     if source_type == "json_fixture":
         return JsonFixtureSourceAdapter(samples_dir=resolved.samples_dir)
     if source_type == "atlassian":
-        # docs/ai/current-plan.md feature2 — access_token/cloudid 전달 경로 확정 후 구현.
-        raise NotImplementedError(
-            "AtlassianSourceAdapter는 access_token/cloudid 전달 경로 확정 후 구현된다 "
-            "(docs/ai/current-plan.md feature2)"
-        )
+        # vendored Data Ingestion Agent 를 감싸는 어댑터(featureI-6). access_token/cloud_id
+        # 전달 경로는 미확정(TBD)이라 PoC 는 Settings placeholder(env 주입)를 사용한다.
+        token = resolved.atlassian_access_token.get_secret_value()
+        if not resolved.atlassian_cloud_id or not token:
+            raise MissingAtlassianCredentialsError(
+                "source_type='atlassian'에는 RAG_ATLASSIAN_CLOUD_ID / "
+                "RAG_ATLASSIAN_ACCESS_TOKEN 주입이 필요하다(전달 경로 확정 전 PoC placeholder)"
+            )
+        from app.adapters.atlassian import AtlassianSourceAdapter
+
+        return AtlassianSourceAdapter.from_settings(resolved)
     raise UnsupportedSourceTypeError(
         f"지원하지 않는 source_type: {source_type!r} (json_fixture | atlassian)"
     )

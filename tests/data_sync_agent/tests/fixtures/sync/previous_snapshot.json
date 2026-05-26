@@ -1,0 +1,51 @@
+{
+  "format_version": "data-sync-snapshot-v1",
+  "generated_at": "2026-05-15T00:00:00Z",
+  "snapshot": {
+    "snapshot_id": "fixture-previous-snapshot",
+    "sync_id": "fixture-previous-sync",
+    "cloud_id": "synthetic-cloud-fixture",
+    "created_at": "2026-05-15T00:00:00Z",
+    "pages": [
+      {
+        "cloud_id": "synthetic-cloud-fixture",
+        "last_modified_at": "2026-05-15T00:00:00Z",
+        "page_id": "updated-page",
+        "page_key": "synthetic-cloud-fixture:space-fixture:updated-page",
+        "page_url": "https://example.invalid/wiki/pages/updated-page",
+        "space_id": "space-fixture",
+        "space_key": "SYN",
+        "space_name": "Synthetic Space",
+        "status": "current",
+        "title": "Synthetic Updated Page",
+        "version_number": 1
+      },
+      {
+        "cloud_id": "synthetic-cloud-fixture",
+        "last_modified_at": "2026-05-15T00:00:00Z",
+        "page_id": "unchanged-page",
+        "page_key": "synthetic-cloud-fixture:space-fixture:unchanged-page",
+        "page_url": "https://example.invalid/wiki/pages/unchanged-page",
+        "space_id": "space-fixture",
+        "space_key": "SYN",
+        "space_name": "Synthetic Space",
+        "status": "current",
+        "title": "Synthetic Unchanged Page",
+        "version_number": 1
+      },
+      {
+        "cloud_id": "synthetic-cloud-fixture",
+        "last_modified_at": "2026-05-15T00:00:00Z",
+        "page_id": "deleted-page",
+        "page_key": "synthetic-cloud-fixture:space-fixture:deleted-page",
+        "page_url": "https://example.invalid/wiki/pages/deleted-page",
+        "space_id": "space-fixture",
+        "space_key": "SYN",
+        "space_name": "Synthetic Space",
+        "status": "current",
+        "title": "Synthetic Deleted Candidate Page",
+        "version_number": 1
+      }
+    ]
+  }
+}

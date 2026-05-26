@@ -44,7 +44,11 @@
 
 ## Milestone B — 수집 (FR-001 / FR-002)
 
-### featureI-2: Data Ingestion Agent — Confluence Full Crawl (FR-001)  📋 상세 Plan
+### featureI-2: Data Ingestion Agent — Confluence Full Crawl (FR-001)  ✅ featureI-6 으로 구현
+
+> **구현 경로**: 본 feature는 신규 작성이 아니라 **featureI-6(외부 에이전트 vendoring 통합)**으로 구현한다.
+> Data Ingestion Agent를 무수정 vendoring하고 `AtlassianSourceAdapter`/`crawler.run_full_crawl` 어댑터로
+> 잇는다. 아래 흐름·완료 기준은 그대로 유효하다.
 
 - **작업 목표**: Confluence 전체 문서를 초기 수집(Full Crawl)해 `raw_pages`/`raw_attachments`(MongoDB)에
   적재하고 Chunking Queue로 인계한다. `DocumentSourceAdapter` 계약을 따르는 `AtlassianSourceAdapter`를
@@ -149,7 +153,10 @@
 
 ## Milestone D — 데이터 동기화 에이전트 (FR-005)
 
-### featureI-5: 데이터 동기화 에이전트 — Delta Sync + 3중 삭제 동기화 (FR-005)
+### featureI-5: 데이터 동기화 에이전트 — Delta Sync + 3중 삭제 동기화 (FR-005)  ✅ featureI-6 으로 구현(Delta+Reconcile / Trash·Webhook TBD)
+
+> **구현 경로**: 본 feature도 **featureI-6(외부 에이전트 vendoring 통합)**으로 구현한다. Data Sync Agent를
+> 무수정 vendoring하고 `app/ingestion/sync.py`(기존 `reconcile_deletions` 보존) + 어댑터로 잇는다.
 
 - **목표**: 주기(기본 1시간) Delta Sync — Confluence API로 Space/Page/첨부 메타 수집, MongoDB 원본
   (`version`/`updatedAt`) 비교로 변경·삭제 페이지만 식별 → 변경분만 FR-001~FR-004 동일 파이프라인 재투입
@@ -159,6 +166,172 @@
 - 수정 대상: `app/ingestion/sync.py`(복사된 `reconcile_deletions` 확장), `app/ingestion/workers/`
 - 재사용: `sync.py`의 `reconcile_deletions`(복사 완료, Reconciliation 중심)
 - 테스트: 변경/삭제 식별, 고스트 삭제, Reconciliation 멱등성, Delta 재투입 흐름
+
+---
+
+## Milestone E — 외부 에이전트 2종 vendoring 통합 (featureI-6)  ✅ 구현 완료 (2026-05-26)
+
+> **상태: 구현 완료 (2026-05-26).** Data Ingestion Agent(FR-001)·Data Sync Agent(FR-005)
+> 두 패키지를 수신해 vendoring → 어댑터 → 큐 배선 → 테스트까지 완료. 검증은 ruff(통과) +
+> py_compile 까지 샌드박스(Python 3.10)에서 수행. **전체 pytest·`./scripts/verify.sh`·push 는
+> Mac(3.11)에서 수행 필요**(샌드박스는 vendored 의 StrEnum 미지원 + 의존성 미설치).
+>
+> **결정 결과**: (1) vendoring 레이아웃 = 패키지를 저장소 루트로(rag 미러), 에이전트
+> `scripts/`+`tests/` 는 `tests/<agent>/` 에 무수정 + `__init__.py` 마커. (2) 어댑터 구동 =
+> 에이전트 상단 workflow(`run_full_crawl_workflow`/`run_data_sync_workflow`) in-process
+> 블랙박스 호출 + 산출물 메모리 변환(로컬 파일 출력은 임시 디렉토리로 우회).
+>
+> **수신 에이전트 실측 vs 계획 차이**: 에이전트 MVP 는 ① ACL ② labels/ancestors
+> ③ 첨부(not_supported_in_mvp) 를 산출하지 않고, ④ 자체 `ProcessedDocument`(중첩
+> space/page/body) 스키마를 쓴다. → 어댑터가 `PageObject` 로 변환하고 ACL 은 space_key 합성,
+> ②③ 는 빈 값으로 둔다(모두 문서화된 TBD). 또한 ⑤ `IngestionStage` enum 에 crawl/ingest
+> 값이 없어 crawl 단계 `ingestion_jobs` 기록은 보류(공유 enum 추가 = RAG 분기 영향 → 협의 대기),
+> `CrawlResult`/`DeltaSyncResult` 를 잡 리포트로 사용. ⑥ snapshot 영속화는 에이전트 로컬
+> 파일 기반(Mongo 영속화는 후속).
+>
+> 본 featureI-6은 featureI-2(Full Crawl)·featureI-5(Delta Sync + 3중 삭제)를 **"신규 작성"이
+> 아니라 "외부 에이전트 vendoring + 얇은 어댑터"** 방식으로 구현한 상위 작업이다.
+>
+> **구현/수정 파일**: `data_ingestion_agent/`·`data_sync_agent/`(vendored), `tests/<agent>/`,
+> `pyproject.toml`(include/exclude/agents extra), `app/adapters/atlassian.py`(신규),
+> `app/adapters/factory.py`·`app/adapters/__init__.py`(atlassian 분기), `app/config.py`
+> (atlassian placeholder), `app/storage/raw_store.py`(신규)·`app/storage/__init__.py`,
+> `app/ingestion/workers/publisher.py`(신규), `app/ingestion/crawler.py`(구현),
+> `app/ingestion/sync.py`(`run_delta_sync` 추가, `reconcile_deletions` 무수정),
+> `tests/adapters/test_atlassian.py`·`tests/ingestion/test_crawler.py`·`test_sync.py`(신규),
+> `tests/test_scaffold.py`(crawler stub 테스트 갱신), `docs/db-schema.md`·`docs/architecture.md`.
+
+### 작업 목표
+
+- 외부에서 받은 두 에이전트 패키지를 **무수정으로 저장소 루트에 vendoring**하고, ingestion 파이프라인은
+  vendored 코드를 직접 호출하지 않고 `app/ingestion/`의 **얇은 어댑터**를 통해서만 연결한다.
+- vendored 코드와 ingestion 계약(`PageObject`, `DocumentSourceAdapter`, 큐 메시지 형식)이 어긋나면
+  **어댑터에서 변환**한다. vendored 원본은 절대 수정하지 않는다.
+- 통합 완료 시 featureI-2(Full Crawl)·featureI-5(Delta Sync + 3중 삭제)의 완료 기준을 충족한다.
+
+### 브랜치
+
+- `feat/#6/vendor-ingestion-sync-agents` (이슈번호는 팀 규칙 — skeleton 브랜치와 분리)
+- 1 change-set = 1 commit 지향. 규모가 크면 (1) vendoring+pyproject, (2) Ingestion Agent 어댑터,
+  (3) Sync Agent 어댑터, (4) 큐 배선, (5) 테스트로 커밋을 분할한다.
+
+### 1) Vendoring 레이아웃 (rag 미러링 — 반드시 준수)
+
+```
+ingestion/
+├── data_ingestion_agent/      # ← 수신 패키지 무수정 vendoring (FR-001)
+├── data_sync_agent/           # ← 수신 패키지 무수정 vendoring (FR-005)
+├── app/                       # ingestion 본체 (어댑터가 vendored 호출)
+└── tests/
+    ├── data_ingestion_agent/  # 받은 테스트 무수정 배치 (+ __init__.py 만 허용)
+    └── data_sync_agent/
+```
+
+- 받은 패키지 디렉토리명·내부 import 경로는 **그대로 보존**한다(원본 무수정). 실제 디렉토리명은
+  수신 패키지에 맞춘다(`data_ingestion_agent`/`data_sync_agent`는 잠정명).
+- 받은 테스트는 `tests/<agent>/`에 무수정 배치하되, pytest 패키지 인식용 `__init__.py`만 추가 허용한다.
+- vendored 패키지가 자체 의존성을 요구하면 `pyproject.toml`에 **추가만** 하고 기존 의존성은 건드리지 않는다.
+
+### 2) `pyproject.toml` 편집 (vendored 무수정 보존 장치)
+
+```toml
+[tool.setuptools.packages.find]
+include = ["app*", "data_ingestion_agent*", "data_sync_agent*"]   # ← vendored 추가
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["data_ingestion_agent", "data_sync_agent"]      # ← lint 제외(원본 무수정)
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+exclude = ["data_ingestion_agent/", "data_sync_agent/"]           # ← 타입체크 제외
+```
+
+- ruff/mypy 제외는 vendored 원본을 우리 컨벤션에 맞추려 수정하지 않기 위한 것이다(rag 패턴 동일).
+- 어댑터(`app/ingestion/*`)는 **제외 대상이 아니다** — 우리 코드이므로 format/lint/type 전부 적용한다.
+
+### 3) 어댑터 seam 설계 (vendored ↔ ingestion 계약)
+
+#### (A) Data Ingestion Agent → Full Crawl (featureI-2 연계)
+
+- **`app/adapters/atlassian.py` (신규)** — `AtlassianSourceAdapter(DocumentSourceAdapter)`.
+  vendored Data Ingestion Agent를 in-process로 호출하고, 그 산출물을 표준 `PageObject` 스트림으로 변환한다.
+  - `fetch_pages(since=None)`: `since=None`이면 vendored Full Crawl, `since`가 있으면 Delta 입력으로 위임.
+  - `list_active_ids() -> ActiveIds`: Reconciliation용 살아있는 page_id/attachment_id 집합.
+  - `watch_changes() -> Iterator[ChangeEvent]`: 미지원이면 빈 스트림.
+  - vendored 출력 필드 ↔ `PageObject`(page_id/space_key/title/body_html/version_number/last_modified/
+    labels/ancestors/webui_link/attachments) **매핑은 어댑터 내부에서** 수행(`docs/atlassian-api.md` 매핑표 기준).
+  - **ACL**: vendored가 ACL을 제공하지 않으면 PoC `_synthesize_acl`(`["space:{space_key}"]`) 패턴으로 합성.
+    `PageObject.is_acl_missing`이면 `INVALID_ACL`로 색인 제외(스키마 단 거부 금지).
+  - **access_token/cloud_id**: `CrawlRequest`(crawler.py)에 이미 placeholder 필드 존재. 어댑터 생성자로
+    주입하되 **로그·메시지·테스트 픽스처에 남기지 않는다**(app/CLAUDE.md §3).
+- **`app/adapters/factory.py` (확장)** — `source_type=="atlassian"` 분기의 `NotImplementedError`를 제거하고
+  `AtlassianSourceAdapter` 생성으로 교체(기존 `json_fixture` 분기 유지).
+- **`app/ingestion/crawler.py` (stub→구현)** — `run_full_crawl(CrawlRequest)`가 어댑터를 오케스트레이션:
+  `fetch_pages()` 순회 → `raw_pages`/`raw_attachments` 적재 → 첨부 다운로드(graceful degrade) →
+  Chunking Queue(`content.chunking`) 발행 → `CrawlResult` 집계. 진행/결과는 `ingestion_jobs`에 기록.
+- **`app/storage/raw_store.py` (신규)** — `raw_pages`/`raw_attachments` 적재 헬퍼(`mongo_cache`/`jobs.py`
+  의 ABC + Fake + Mongo 3계층 패턴 재사용). featureI-2 plan 정합.
+
+#### (B) Data Sync Agent → Delta Sync + 3중 삭제 (featureI-5 연계)
+
+- **`app/ingestion/sync.py` (복사본 확장)** — 현재 `reconcile_deletions`(Reconciliation)만 존재.
+  vendored Data Sync Agent를 어댑터로 연결해 Delta Sync(변경·삭제 페이지 식별 → 변경분만 FR-001~004
+  재투입)와 3중 삭제(Trash API / Webhook / 주1회 Reconciliation)를 잇는다. 기존 `reconcile_deletions`
+  시그니처·동작은 보존(비파괴 확장).
+- vendored Sync 로직이 `DocumentSourceAdapter.fetch_pages(since=...)`/`list_active_ids()`/`watch_changes()`
+  계약과 어긋나면 어댑터에서 변환한다. 삭제는 Qdrant payload `soft_delete`(소프트 삭제) →
+  `store.delete_by_page_id`/`delete_by_attachment_id` cascade로 잇는다.
+- **`app/ingestion/workers/sync_worker.py` (신규, featureI-5)** — 주기 트리거/Webhook 수신을 sync 어댑터에 배선.
+
+#### (C) 공통 — 큐 배선
+
+- 큐/라우팅 키 상수는 `app/ingestion/workers/__init__.py`의 `QUEUE_INGESTION="ingestion"` /
+  `QUEUE_ATTACHMENT="content.extract.attachment"` / `QUEUE_CHUNKING="content.chunking"` /
+  `QUEUE_EMBEDDING="content.embedding"`를 **그대로 사용**(신규 키 추가 금지, 필요 시 plan에서 합의).
+- 발행 메시지 스키마(page_id/attachment_id/stage/라우팅 키)는 featureI-2/I-4 형식과 정합. pika 발행은
+  fake로 테스트.
+
+### 4) 수정하지 않을 파일
+
+- `data_ingestion_agent/`·`data_sync_agent/` vendored 원본 전체(어댑터에서만 변환).
+- `app/ingestion/chunker/`·`embedder/`·`embedding.py`·`vector_store.py`·`indexer.py`(FR-003/004 — featureI-4).
+- `app/ingestion/extractor/`(FR-002 — featureI-3).
+- `app/schemas/*`(PageObject/Attachment 계약 — 변경 불필요. 변경 필요 판단 시 RAG 분기 영향 먼저 설명).
+
+### 5) 테스트 (외부 의존성 mock/fake)
+
+- 받은 에이전트 테스트는 `tests/<agent>/`에 무수정 이식 후 통과 확인(Mac/3.11).
+- 어댑터 신규 테스트(`tests/adapters/test_atlassian.py`, `tests/ingestion/test_crawler.py`,
+  `tests/ingestion/test_sync.py`): vendored 출력 → `PageObject` 매핑 정합, ACL 합성, `is_acl_missing`→
+  `INVALID_ACL`, 첨부 매핑, Chunking Queue 메시지 형식·라우팅 키(fake pika), `raw_*` 적재(fake Mongo),
+  Delta since 필터, 3중 삭제(soft_delete/cascade), Reconciliation 멱등성.
+- vendored 코드 자체의 단위 테스트는 작성하지 않는다(원본 책임). 우리는 **어댑터 경계만** 검증한다.
+
+### 6) 검증 (이 샌드박스 제약 명시)
+
+- 이 샌드박스는 Python 3.10이라 `StrEnum` 사용 코드의 pytest 실행이 불가하다 →
+  여기서는 **ruff / py_compile / 정적 분석까지만** 수행하고, **전체 테스트(`./scripts/verify.sh`)·push는
+  사용자가 Mac(3.11)에서** 수행한다. 커밋까지만 둔다(push 인증 정보 없음).
+
+### 7) TBD — 협의 대기(추측 구현 금지)
+
+- ★ **ACL 모델**: Atlassian 명세에 페이지 단위 권한 API 부재(`docs/atlassian-api.md` "ACL 미해결").
+  PoC는 `space_key` 기반 `_synthesize_acl` 합성 유지. 실연동(space_key vs content restrictions)은
+  팀(+RAG 검색 ACL 필터) 결정 대기 — **RAG 레포 공유 계약**.
+- **`access_token`/`cloud_id` 전달 경로**(Auth Server→BFF→Ingestion): 미확정. `CrawlRequest` placeholder로 진행.
+- 두 항목 모두 결정 전까지 문서에 TBD로 남기고 추측 구현하지 않는다.
+
+### 8) 완료 기준
+
+- 두 에이전트 패키지가 루트에 무수정 vendoring + `pyproject` include/제외 반영, vendored 테스트 통과.
+- `AtlassianSourceAdapter`가 `DocumentSourceAdapter` 3개 메서드 충족, `crawler.run_full_crawl` mock
+  end-to-end(Space→페이지→`raw_*` 적재→Chunking Queue 발행) 통과(featureI-2 완료 기준 충족).
+- Sync 어댑터로 Delta Sync + 3중 삭제 흐름 mock 통과(featureI-5 완료 기준 충족).
+- `./scripts/verify.sh`(Mac/3.11) 통과, `docs/db-schema.md`(`raw_pages`/`raw_attachments`/`attachment_texts`
+  스키마)·`docs/architecture.md`·`docs/ai/working-log.md` 갱신, 토큰·자격증명 미포함 확인.
 
 ---
 

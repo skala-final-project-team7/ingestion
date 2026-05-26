@@ -1,0 +1,56 @@
+{
+  "new-page": {
+    "_links": {
+      "webui": "https://example.invalid/wiki/pages/new-page"
+    },
+    "body": {
+      "storage": {
+        "representation": "storage",
+        "value": "<h1>Synthetic New Heading</h1><p>Readable new body</p>"
+      }
+    },
+    "id": "new-page",
+    "status": "current",
+    "title": "Synthetic New Page",
+    "version": {
+      "createdAt": "2026-05-15T01:00:00Z",
+      "number": 1
+    }
+  },
+  "updated-page": {
+    "_links": {
+      "webui": "https://example.invalid/wiki/pages/updated-page"
+    },
+    "body": {
+      "storage": {
+        "representation": "storage",
+        "value": "<h2>Synthetic Updated Heading</h2><p>Readable updated body</p>"
+      }
+    },
+    "id": "updated-page",
+    "status": "current",
+    "title": "Synthetic Updated Page",
+    "version": {
+      "createdAt": "2026-05-15T02:00:00Z",
+      "number": 2
+    }
+  },
+  "unsupported-page": {
+    "_links": {
+      "webui": "https://example.invalid/wiki/pages/unsupported-page"
+    },
+    "body": {
+      "storage": {
+        "representation": "storage",
+        "value": "<ac:structured-macro ac:name=\"toc\">Macro</ac:structured-macro><ri:attachment ri:filename=\"synthetic.pdf\" /><p>Visible unsupported content text</p>"
+      }
+    },
+    "id": "unsupported-page",
+    "status": "current",
+    "title": "Synthetic Unsupported Content Page",
+    "version": {
+      "createdAt": "2026-05-15T01:30:00Z",
+      "number": 1
+    }
+  }
+}
