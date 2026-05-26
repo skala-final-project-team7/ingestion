@@ -15,6 +15,9 @@
   - 2026-05-18, feature6 Phase 3 — scroll_page_ids / scroll_attachment_ids 메서드 추가.
     설계서 §3.7 Reconciliation Phase 1 흐름의 ``set_B_pages`` / ``set_B_attaches``
     추출에 사용된다. CONTENT_POOL 하나만 스캔(3 Pool 동일 청크 적재 정합).
+  - 2026-05-26, ADR 0003 항목 4 — soft-delete 도입. payload ``is_deleted`` BOOL 인덱스
+    추가, 검색 결합 필터에 ``is_deleted=true`` ``must_not`` 제외, soft_delete_by_page_id /
+    soft_delete_by_attachment_id (set_payload) 추가. hard delete 는 그대로 보존.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -77,6 +80,8 @@ _KEYWORD_INDEX_FIELDS: tuple[str, ...] = (
     "source_type",
 )
 _DATETIME_INDEX_FIELDS: tuple[str, ...] = ("last_modified",)
+# soft-delete 플래그 인덱스 (ADR 0003 항목 4 — is_deleted must_not 제외 필터 성능).
+_BOOL_INDEX_FIELDS: tuple[str, ...] = ("is_deleted",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +208,12 @@ class QdrantPoolStore:
                 collection_name=collection_name,
                 field_name=field,
                 field_schema=PayloadSchemaType.DATETIME,
+            )
+        for field in _BOOL_INDEX_FIELDS:
+            self._client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=PayloadSchemaType.BOOL,
             )
 
     # --- Upsert ---
@@ -361,10 +372,14 @@ class QdrantPoolStore:
                 else:
                     must_conditions.append(FieldCondition(key=field, match=MatchValue(value=value)))
         must_conditions.append(acl_filter_obj)
+        # soft-delete 제외 (ADR 0003 항목 4) — is_deleted=true Point 는 모든 검색에서 항상
+        # 제외한다. payload 에 is_deleted 필드가 없는 legacy Point 는 true 와 매칭되지 않아
+        # 자연히 통과한다(미삭제 간주 — 재색인 없이 후방 호환).
+        deleted_exclusion = [FieldCondition(key="is_deleted", match=MatchValue(value=True))]
         # mypy: Filter.must 는 더 넓은 Condition union list를 받지만 list invariance 때문에
         # list[FieldCondition | Filter]가 호환되지 않는다. 런타임 contract는 만족(우리가 넣는
         # 두 타입 모두 그 union에 속함)하므로 좁힘만 우회.
-        return Filter(must=must_conditions)  # type: ignore[arg-type]
+        return Filter(must=must_conditions, must_not=deleted_exclusion)  # type: ignore[arg-type]
 
     # --- Delete ---
 
@@ -446,3 +461,31 @@ class QdrantPoolStore:
             collection_name = _pool_name_to_collection(self._settings, pool_name)
             if self._client.collection_exists(collection_name):
                 self._client.delete(collection_name=collection_name, points_selector=selector)
+
+    # --- Soft delete (ADR 0003 항목 4) ---
+
+    def soft_delete_by_page_id(self, page_id: str) -> None:
+        """``page_id`` 일치 Point 의 payload ``is_deleted`` 를 True 로 설정한다 (소프트 삭제).
+
+        hard delete(``delete_by_page_id``)와 달리 Point 를 보존하고 검색에서만 제외한다
+        (rag 검색이 ``is_deleted=true`` 를 ``must_not`` 으로 거른다). Trash/Webhook 삭제,
+        복구·감사·지연 정리(GC)를 위한 경로다 (ADR 0003 항목 4, db-schema §1.2).
+        """
+        self._soft_delete_by_field("page_id", page_id)
+
+    def soft_delete_by_attachment_id(self, attachment_id: str) -> None:
+        """``attachment_id`` 일치 Point 의 ``is_deleted`` 를 True 로 설정한다 (소프트 삭제)."""
+        self._soft_delete_by_field("attachment_id", attachment_id)
+
+    def _soft_delete_by_field(self, field: str, value: str) -> None:
+        # set_payload(payload, points=Filter) — 필터에 매칭되는 모든 Point 의 is_deleted 만
+        # True 로 갱신하고 벡터·나머지 payload 는 보존한다(부분 업데이트).
+        selector = Filter(must=[FieldCondition(key=field, match=MatchValue(value=value))])
+        for pool_name in POOL_NAMES:
+            collection_name = _pool_name_to_collection(self._settings, pool_name)
+            if self._client.collection_exists(collection_name):
+                self._client.set_payload(
+                    collection_name=collection_name,
+                    payload={"is_deleted": True},
+                    points=selector,
+                )
