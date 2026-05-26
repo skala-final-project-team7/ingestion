@@ -39,6 +39,7 @@ from app.storage.mongo_cache import (
     MongoEmbeddingCache,
 )
 from app.storage.qdrant_client import QdrantPoolStore, SearchHit
+from app.storage.qdrant_fake import FakeQdrantPoolStore
 from app.storage.raw_store import (
     FakeRawPageStore,
     MongoRawPageStore,
@@ -59,6 +60,7 @@ __all__ = [
     "FakeChunkTextLookup",
     "FakeEmbeddingCache",
     "FakeIngestionJobsRepository",
+    "FakeQdrantPoolStore",
     "FakeRawPageStore",
     "FakeSpaceDocTypeCache",
     "IngestionJobRecord",
