@@ -24,11 +24,16 @@ RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통
 
 작업 전 아래 문서를 확인한다.
 
+- Data Ingestion Pipeline app/ 전용 규칙: `app/CLAUDE.md`
 - Claude Code 작업 플로우: `docs/ai/workflow.md`
 - 팀 공통 프롬프트 템플릿: `docs/ai/prompt-templates.md`
 - 아키텍처 문서: `docs/architecture.md`
+- 시스템 설계서(수집 §3 / 임베딩 §5 / 스키마 §7): `docs/rag-pipeline-design.md`
+- 청킹 전략: `docs/chunking-strategy.md`
+- Confluence 수집 API: `docs/atlassian-api.md`
 - 코딩 컨벤션: `docs/conventions.md`
 - DB 스키마: `docs/db-schema.md`
+- ACL 접두 규약(ADR): `docs/adr/0002-acl-prefix-convention.md`
 - 현재 작업 Plan: `docs/ai/current-plan.md`
 
 > 요구사항 원본(FR-001 수집 / FR-002 첨부 텍스트 추출 / FR-003 청킹 / FR-004 임베딩 색인)은

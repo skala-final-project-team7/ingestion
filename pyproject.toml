@@ -9,6 +9,9 @@ dependencies = [
     "pydantic-settings>=2.3",      # app/config.py 환경 변수 설정
     "httpx>=0.27",
     "tenacity>=8.3",               # Confluence/외부 호출 재시도
+    # --- LLM (문서 분석기 — doc_type 분류, FR-003 [Agent]) ---
+    "openai>=1.30",                # GPT-4o-mini + Function Calling (스페이스 단위 doc_type 판별)
+    "tiktoken>=0.7",               # 토큰 카운팅
     # --- 메시지 큐 (비동기 수집 파이프라인) ---
     "pika>=1.3",                   # RabbitMQ — Ingestion / Attachment / Chunking / Embedding Queue
     # --- 데이터 저장소 클라이언트 ---

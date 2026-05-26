@@ -10,10 +10,17 @@
 
 ## 작업 개요
 
-- **작업 목표**: Confluence 문서·첨부 수집 → 추출 → 청킹 → 임베딩 색인까지 동작하는 수집 파이프라인 MVP
-- **담당 영역**: Data Ingestion Pipeline 전체 (`app/`, `tests/`)
+- **작업 목표**: Confluence 문서·첨부 수집 → 추출 → 청킹 → 임베딩 색인 + 동기화까지 동작하는 수집 파이프라인 MVP
+- **담당 영역**: Data Ingestion Pipeline 전체 (`app/`, `tests/`) — 요구사항정의서 **FR-001~FR-005**
+  - FR-001 데이터 수집 에이전트(Confluence Page+첨부 수집) / FR-002 첨부 텍스트 추출기 /
+    FR-003 문서·파일 유형 분류 + Adaptive Chunker / FR-004 Dual Embedding + Multi-Pool 색인 /
+    FR-005 데이터 동기화 에이전트(Delta Sync + 3중 삭제). (FR-006~ 질의/응답·피드백·대시보드는 RAG/BFF 영역)
 - **브랜치 규칙**: feature별로 `feat/#<이슈번호>/<기능-이름>`
-- **참고 문서**: `CLAUDE.md`, `docs/architecture.md`, `docs/conventions.md`, `docs/db-schema.md`, 외부 요구사항정의서(FR-001~004)
+- **근거 문서**: 외부 **요구사항정의서 v0.2.1**(§2.0 Multi-Agent / §2.2 FR-001~005 / §3 데이터 요구사항),
+  **아키텍처 다이어그램**(Data Ingestion Pipeline: Data Sync/Ingestion Agent + Chunking + Embedding,
+  RabbitMQ, Confluence·GPT 소스, MySQL/MongoDB/Qdrant, Logging&Monitoring),
+  `docs/architecture.md`, `docs/rag-pipeline-design.md`(§3·§5·§7), `docs/chunking-strategy.md`,
+  `docs/atlassian-api.md`(DATA-01~03), `docs/db-schema.md`
 
 ## 선행 확인 / 의존성
 
@@ -54,24 +61,35 @@
 - 재사용: chunker의 첨부 처리 로직(`chunker/attachment.py`)과 추출 책임 분리 정리
 - 테스트: 파일 유형별 추출, 추출 실패 graceful degrade, 큐 메시지 형식
 
-## Milestone C — 청킹·임베딩 Worker (FR-003 / FR-004)
+## Milestone C — 청킹·임베딩 Worker (FR-003 문서·파일 유형 분류 + Adaptive Chunker / FR-004 Dual Embedding 색인)
 
-### featureI-4: Chunking / Embedding Worker
+### featureI-4: 문서·파일 유형 분류 + Chunking / Embedding Worker (FR-003 / FR-004)
 
-- **목표**: 복사된 Adaptive Chunker·Dual Embedding을 RabbitMQ Worker로 배선.
-  Chunking Queue 수신 → 문서/첨부 분석 → 청킹 → Embedding Queue 발행 → 임베딩 → Qdrant upsert + embedding_cache 멱등성.
-- 수정 대상: `app/ingestion/workers/`, (복사 자산은 재사용)
-- 테스트: Worker end-to-end(fake 큐/Qdrant/Mongo), 멱등성(동일 version skip)
+- **FR-003 — 문서·파일 유형 분류 + Adaptive Chunker**:
+  - 문서 분석기 [Agent] (신규 구현, GPT-4o-mini + Function Calling): 본문을 6유형(장애대응/운영가이드/
+    FAQ/회의록/ADR/트러블슈팅)으로 분류, 스페이스 단위 1회 판별 → MySQL `space_doc_type_cache` 캐싱
+    (실패 시 'general' 폴백). **rag에서는 미구현(Agent 담당자 몫)이라 복사 자산에 없음 → 본 레포에서 신설.**
+  - 첨부 분석기 [Pipeline] (복사 완료, `attachment_analyzer.py`): 파일 유형(PDF/Word/Excel) 기준 청킹 전략 분기.
+  - Adaptive Chunker [Pipeline] (복사 완료, `chunker/`): 유형별 적합 전략 + 크기·오버랩 동적 조절.
+- **FR-004 — Dual Embedding + Multi-Pool 색인** (복사 완료, `embedder/`·`embedding.py`·`vector_store.py`·`indexer.py`):
+  Dense(e5-large 1024d) + Sparse(BM25), Qdrant Title/Content/Label Pool upsert, `embedding_cache` 멱등성.
+- **Worker 배선**: Chunking Queue(`content.chunking`) 수신 → 문서/첨부 분석 → 청킹 → Embedding Queue 발행 →
+  임베딩 → Qdrant upsert. 결과는 `import_jobs`(MongoDB) 기록.
+- 수정 대상: `app/ingestion/document_analyzer.py`(신규 Agent), `app/ingestion/workers/`, (FR-004 복사 자산 재사용)
+- 테스트: 문서 분석기(mock LLM, doc_type 판별·캐싱·폴백), Worker end-to-end(fake 큐/Qdrant/Mongo), 멱등성(동일 version skip)
 
-## Milestone D — 동기화 (Data Sync Agent)
+## Milestone D — 데이터 동기화 에이전트 (FR-005)
 
-### featureI-5: Delta Sync + 삭제 동기화 3중 전략
+### featureI-5: 데이터 동기화 에이전트 — Delta Sync + 3중 삭제 동기화 (FR-005)
 
-- **목표**: 주기(1시간) Delta Sync — version/updatedAt 비교로 변경/삭제 식별 → 재수집·재청킹·upsert.
-  삭제 3중 전략: Confluence Trash API(소프트 삭제) / Webhook(실시간) / 주1회 Reconciliation(고스트 제거).
-- 수정 대상: `app/ingestion/sync.py`(복사분 확장), `app/ingestion/workers/`
-- 재사용: `sync.py`의 `reconcile_deletions`(복사 완료)
-- 테스트: 변경/삭제 식별, 고스트 삭제, Reconciliation 멱등성
+- **목표**: 주기(기본 1시간) Delta Sync — Confluence API로 Space/Page/첨부 메타 수집, MongoDB 원본
+  (`version`/`updatedAt`) 비교로 변경·삭제 페이지만 식별 → 변경분만 FR-001~FR-004 동일 파이프라인 재투입
+  (본문 재수집 → chunk 재생성 → Vector DB upsert).
+- **3중 삭제 동기화**: (1) Confluence **Trash API**로 삭제(Trashed) 페이지·첨부 조회 → Qdrant payload
+  `soft_delete` (소프트 삭제), (2) **Webhook**(실시간 삭제 이벤트), (3) 주 1회 **Reconciliation**(고스트 데이터 제거).
+- 수정 대상: `app/ingestion/sync.py`(복사된 `reconcile_deletions` 확장), `app/ingestion/workers/`
+- 재사용: `sync.py`의 `reconcile_deletions`(복사 완료, Reconciliation 중심)
+- 테스트: 변경/삭제 식별, 고스트 삭제, Reconciliation 멱등성, Delta 재투입 흐름
 
 ---
 
