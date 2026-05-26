@@ -56,3 +56,39 @@
 
 **보안**: access_token 은 Settings `SecretStr`/주입 인자로만 다루고 로그·메시지 페이로드·
 테스트 픽스처에 남기지 않음(에이전트 자체 redaction + 어댑터 placeholder).
+
+---
+
+## 2026-05-26 — featureI-4: Chunking+Embedding Worker 배선 (FR-003 / FR-004)
+
+**작업**: featureI-6로 연결된 앞 절반(crawl→raw_pages→`content.chunking` 발행)을 이어받아,
+`content.chunking` 메시지를 소비해 Adaptive Chunker → Dual Embedding → Qdrant upsert 까지
+배선. 끊겨 있던 큐 소비 단계를 채워 수집 파이프라인을 end-to-end로 연결.
+
+**결정**
+
+- **단일 Worker 토폴로지(A)**: 복사된 `indexer.index_chunks` 가 embed+upsert+cache 를 결합하므로
+  하나의 Worker 가 `content.chunking` 소비 → `raw_pages.get_page` → `chunk_page` → `index_chunks`
+  를 수행한다. `content.embedding` 큐는 상수로 예약(운영 스케일링 시 2-Worker 분리 여지).
+- **doc_type 폴백 우선**: `chunk_page(page)` 의 라벨 휴리스틱(`infer_doc_type`, 미매칭 시
+  operation) 사용. GPT-4o-mini 문서 분석기[Agent] + MySQL `space_doc_type_cache` 는 featureI-4b 후속.
+- **의존성 주입**: 임베더/Qdrant/cache/raw_store/jobs 를 `ChunkingWorkerDeps` 로 주입(테스트는 Fake).
+  실 어댑터(E5/BM25/Qdrant from_settings) 부트스트랩은 배포 wiring(후속).
+- **잡 기록**: 단일 Worker 라 색인 종단 단계인 `IngestionStage.UPSERT` 로 1건 기록(SUCCESS /
+  INVALID_ACL / EMPTY_BODY — 모두 기존 enum 값). crawl 단계와 달리 stage enum 이 존재해 기록 가능.
+
+**게이트(app/CLAUDE.md §3 정합)**: ACL 누락 페이지(`is_acl_missing`)는 색인하지 않고 INVALID_ACL,
+청크 0건은 EMPTY_BODY, `page_id` 가 raw_pages 에 없으면 `RawPageNotFoundError`(상위 DLQ).
+
+**신규/수정 파일**: `app/ingestion/workers/consumer.py`(MessageConsumer ABC+Fake+Pika),
+`app/ingestion/workers/chunking_worker.py`(process_chunking_message + run_chunking_worker),
+`app/storage/raw_store.py`(`get_page` 읽기 추가 — Fake/Mongo), `tests/ingestion/test_chunking_worker.py`,
+`docs/architecture.md`·`docs/ai/current-plan.md`.
+
+**검증**: ruff check/format + mypy app(41 files) 통과(샌드박스). 멱등성(동일 version 재실행 skip)·
+ACL/빈 본문 게이트·잡 기록·end-to-end 를 Fake(임베더/Qdrant/cache)로 테스트. 전체 pytest·
+`./scripts/verify.sh`·push 는 Mac(3.11)에서.
+
+**후속(TBD)**: featureI-4b(GPT-4o-mini 문서 분석기 + space_doc_type_cache), 첨부 청크 경로
+(FR-002 첨부 입력 생성 후), 실 어댑터 부트스트랩 + pika consumer 배포 wiring, `content.embedding`
+2-Worker 분리(운영 스케일링 시).
