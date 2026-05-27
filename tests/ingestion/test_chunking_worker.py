@@ -179,6 +179,47 @@ def test_run_worker_processes_all_consumer_messages() -> None:
     assert all(r.status is IngestionStatus.SUCCESS for r in results)
 
 
+def test_run_worker_isolates_missing_page_and_continues() -> None:
+    # 파이프라인 불일치 메시지(ghost)가 중간에 끼어 있어도 워커가 크래시하지 않고
+    # 정상 메시지를 계속 처리해야 한다(poison-message 격리). process_chunking_message 는
+    # 여전히 RawPageNotFoundError 를 raise 하지만, run_chunking_worker 가 메시지 단위로
+    # 격리(로그 후 skip)한다.
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_page(_page("page-2"))
+    consumer = FakeMessageConsumer(
+        messages=[{"page_id": "page-1"}, {"page_id": "ghost"}, {"page_id": "page-2"}]
+    )
+    deps = _deps(raw)
+
+    # 예외가 전파되지 않아야 한다(배치 크래시 없음).
+    results = run_chunking_worker(consumer, deps)
+
+    # ghost 는 격리(skip)되고 정상 2건만 결과에 남는다.
+    assert [r.page_id for r in results] == ["page-1", "page-2"]
+    assert all(r.status is IngestionStatus.SUCCESS for r in results)
+
+
+def test_run_worker_isolates_missing_attachment_and_continues() -> None:
+    # 첨부 불일치(AttachmentNotFoundError)도 동일하게 격리되어야 한다.
+    raw = FakeRawPageStore()
+    raw.save_page(_page("page-1"))
+    raw.save_page(_page("page-2"))
+    consumer = FakeMessageConsumer(
+        messages=[
+            {"page_id": "page-1"},
+            {"page_id": "page-1", "attachment_id": "ghost-att", "source_type": "attachment"},
+            {"page_id": "page-2"},
+        ]
+    )
+    deps = _deps(raw)
+
+    results = run_chunking_worker(consumer, deps)
+
+    assert [r.page_id for r in results] == ["page-1", "page-2"]
+    assert all(r.status is IngestionStatus.SUCCESS for r in results)
+
+
 # --- 첨부 청킹 경로 (featureI-3b) ---
 
 # analyze_attachment 의 텍스트 유효성(>= 200자) 통과를 위한 충분히 긴 정상 텍스트.

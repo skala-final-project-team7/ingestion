@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -46,6 +47,8 @@ from app.schemas.chunk import Chunk
 from app.schemas.enums import IngestionStage, IngestionStatus, SourceType
 from app.storage.jobs import IngestionJobRecord, IngestionJobsRepository
 from app.storage.raw_store import RawPageStore
+
+_LOGGER = logging.getLogger(__name__)
 
 # chunk_attachment 시그니처 — 파일 시스템 의존성을 갖는 함수라 deps 주입으로 테스트한다
 # (rag app/pipeline/ingestion_graph.py 의 ChunkAttachmentFn 패턴 정합).
@@ -296,10 +299,31 @@ def run_chunking_worker(
 ) -> list[ChunkingMessageResult]:
     """consumer 스트림의 ``content.chunking`` 메시지를 순서대로 처리한다(얇은 루프).
 
-    각 메시지를 ``process_chunking_message`` 로 처리하고 결과를 모아 반환한다. 운영에서는
-    pika consumer 가 ack/DLQ 를 관리하고, 처리 핵심 로직은 단위 함수에 위임된다.
+    각 메시지를 ``process_chunking_message`` 로 처리하고 성공 결과를 모아 반환한다.
+
+    회복력: ``RawPageNotFoundError`` / ``AttachmentNotFoundError`` 는 메시지가 가리키는
+    ``raw_pages``/``raw_attachments`` 가 없는 **파이프라인 불일치(영구 실패)** 로, 재시도해도
+    해소되지 않는다. 이 예외가 루프 밖으로 전파되면 워커 배치 전체가 중단되고, consumer 가
+    해당 메시지를 ack 하지 못해 재연결 시 무한 재전송되는 poison-message 가 된다. 따라서 이
+    두 예외는 메시지 단위로 격리(WARNING 로그 후 skip)하고 다음 메시지를 계속 처리한다 —
+    그래야 consumer 가 정상적으로 ack 를 이어가 poison 루프를 막는다. 이는
+    ``process_chunking_message`` docstring 이 명시한 "상위에서 DLQ 처리" 의 최소 구현이다.
+
+    범위: 영구 실패의 durable DLQ 적재와 전이적(transient) 실패의 재시도 분리는 후속
+    (featureI DLQ 정책)이다. 예상치 못한 예외는 무음 데이터 유실을 피하기 위해 그대로
+    전파한다(광역 ``except`` 로 삼키지 않는다).
     """
-    return [process_chunking_message(message, deps) for message in consumer.consume()]
+    results: list[ChunkingMessageResult] = []
+    for message in consumer.consume():
+        try:
+            results.append(process_chunking_message(message, deps))
+        except (RawPageNotFoundError, AttachmentNotFoundError) as exc:
+            _LOGGER.warning(
+                "chunking worker: 파이프라인 불일치로 메시지 1건 skip — %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+    return results
 
 
 def _record(
