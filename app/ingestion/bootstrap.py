@@ -96,11 +96,17 @@ def build_chunking_worker_deps(
     from app.storage.mongo_cache import MongoEmbeddingCache
     from app.storage.qdrant_client import QdrantPoolStore
 
+    # Qdrant 컬렉션은 임베더의 실제 차원으로 부트스트랩해야 한다. from_settings 의
+    # dense_dimension 기본값(1024)에 의존하면, e5-large(1024) 가 아닌 모델을
+    # RAG_DENSE_EMBEDDING_MODEL 로 설정했을 때 컬렉션 차원과 벡터 차원이 어긋나
+    # upsert 가 실패한다. 따라서 임베더가 보고한 dimension 을 명시 전달한다
+    # (rag build_real_deps 패턴 정합).
+    dense_embedder = E5DenseEmbedder(model_name=resolved.dense_embedding_model)
     return ChunkingWorkerDeps(
         raw_store=store,
-        dense_embedder=E5DenseEmbedder(model_name=resolved.dense_embedding_model),
+        dense_embedder=dense_embedder,
         sparse_embedder=BM25SparseEmbedder(),
-        store=QdrantPoolStore.from_settings(resolved),
+        store=QdrantPoolStore.from_settings(resolved, dense_dimension=dense_embedder.dimension),
         cache=MongoEmbeddingCache.from_settings(resolved),
         jobs=MongoIngestionJobsRepository.from_settings(resolved),
         doc_type_resolver=build_document_analyzer(resolved),
