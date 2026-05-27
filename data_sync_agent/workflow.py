@@ -298,6 +298,43 @@ def build_current_snapshot(state: DataSyncWorkflowState) -> DataSyncWorkflowStat
     return state
 
 
+def _unavailable_page_keys(state: DataSyncWorkflowState) -> set[str]:
+    """이번 sync 에서 메타데이터를 신뢰성 있게 확인하지 못한 '이전 snapshot' 페이지의 page_key.
+
+    Space 목록(list_spaces) 또는 특정 space 의 페이지 목록(fetch_page_metadata) 조회가
+    실패하면 그 space 의 페이지가 current snapshot 에서 통째로 누락된다. 이를 그대로 diff
+    하면 일시적 장애(타임아웃·5xx)가 '대량 삭제'로 오인되어 삭제 메시지가 발행된다. 실패한
+    범위에 속하는 이전 페이지의 page_key 를 모아 diff 의 ``unavailable_page_keys`` 로 넘기면
+    그 페이지들은 DELETED_CANDIDATE 대신 FAILED 로 분류되어 삭제에서 보호된다(데이터 무결성).
+
+    분류 기준:
+      - LIST_SPACES 실패: space 자체를 열거하지 못했으므로 이전 페이지 '전체'를 보호한다.
+      - FETCH_PAGE_METADATA(SPACE) 실패: 해당 space_id 의 이전 페이지만 보호한다.
+
+    정상적으로 조회된 space 에서 실제로 사라진 페이지는 여전히 DELETED_CANDIDATE 로 남는다
+    (정상 삭제 탐지는 무영향).
+    """
+    previous = state.previous_snapshot
+    if previous is None:
+        return set()
+
+    if any(item.stage == FailedItemStage.LIST_SPACES for item in state.failed_items):
+        return {str(page.page_key) for page in previous.pages}
+
+    failed_space_ids = {
+        item.item_id
+        for item in state.failed_items
+        if item.stage == FailedItemStage.FETCH_PAGE_METADATA
+        and item.item_type == FailedItemType.SPACE
+        and item.item_id
+    }
+    if not failed_space_ids:
+        return set()
+    return {
+        str(page.page_key) for page in previous.pages if page.space_id in failed_space_ids
+    }
+
+
 def diff_previous_current_snapshots(
     state: DataSyncWorkflowState,
 ) -> DataSyncWorkflowState:
@@ -308,6 +345,7 @@ def diff_previous_current_snapshots(
         state.diff_result = diff_snapshots(
             state.previous_snapshot,
             state.current_snapshot,
+            unavailable_page_keys=_unavailable_page_keys(state),
         )
     except Exception as exc:
         state.failed_items.append(

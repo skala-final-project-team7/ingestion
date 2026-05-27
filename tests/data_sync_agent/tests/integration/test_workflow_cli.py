@@ -34,7 +34,12 @@ class FakeConfluenceClient:
         return self.spaces
 
     def list_space_pages(self, space_id: str) -> list[dict]:
-        return self.pages_by_space.get(space_id, [])
+        pages = self.pages_by_space.get(space_id, [])
+        # 값이 Exception 이면 해당 space 페이지 목록 조회 실패를 시뮬레이션한다
+        # (일시적 5xx/타임아웃). 기존 호출(list 값)은 그대로 동작한다.
+        if isinstance(pages, Exception):
+            raise pages
+        return pages
 
     def get_page_detail(self, page_id: str) -> dict:
         self.requested_page_ids.append(page_id)
@@ -302,6 +307,49 @@ def test_workflow_treats_empty_current_snapshot_as_deleted_candidates(
     assert result.report.counts.deleted_candidates == 1
     assert client.requested_page_ids == []
     assert result.deleted_items[0].page_id == "old"
+
+
+def test_workflow_space_fetch_failure_does_not_mass_delete(tmp_path: Path) -> None:
+    # 회귀(#1): space 페이지 목록 조회가 일시적으로 실패하면, 그 space 의 이전 페이지들이
+    # '삭제 후보'로 오인되어선 안 된다(대량 삭제 방지). 위
+    # test_workflow_treats_empty_current_snapshot_as_deleted_candidates 와 대비: 조회가
+    # '성공' 후 실제로 사라진 페이지만 삭제 후보가 되고, 조회 '실패' 페이지는 FAILED 로 보호된다.
+    cloud_id = _runtime_value("cloud")
+    previous_snapshot = _previous_snapshot_path(
+        tmp_path=tmp_path,
+        cloud_id=cloud_id,
+        pages=[
+            _snapshot_item(cloud_id=cloud_id, page_id="a", version_number=1),
+            _snapshot_item(cloud_id=cloud_id, page_id="b", version_number=1),
+        ],
+    )
+    config = _config(
+        tmp_path=tmp_path,
+        cloud_id=cloud_id,
+        previous_snapshot=previous_snapshot,
+    )
+    client = FakeConfluenceClient(
+        spaces=[_space()],
+        pages_by_space={"space-1": RuntimeError("space pages fetch failed (transient 503)")},
+        details_by_page={},
+    )
+
+    result = run_data_sync_workflow(
+        config=config,
+        client=client,
+        now=lambda: "2026-05-15T03:00:00Z",
+    )
+
+    # 일시적 장애 → 이전 페이지가 삭제 후보가 되지 않는다(삭제 메시지 0건).
+    assert result.deleted_items == []
+    assert all(
+        payload.event_type != "delete_candidate_detected" for payload in result.message_payloads
+    )
+    # space 페치 실패 자체는 failed_item 으로 기록된다.
+    assert any(
+        item.stage == "fetch_page_metadata" and item.item_id == "space-1"
+        for item in result.failed_items
+    )
 
 
 def test_workflow_records_partial_detail_failure_without_stopping(
