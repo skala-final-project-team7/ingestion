@@ -16,7 +16,6 @@ from __future__ import annotations
 """
 
 from dataclasses import dataclass
-from html import unescape
 from html.parser import HTMLParser
 
 
@@ -96,9 +95,12 @@ class _PlainTextParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._ignored_depth:
             return
-        text = unescape(data)
-        if text:
-            self._parts.append(text)
+        # HTMLParser(convert_charrefs=True) 가 handle_data 호출 전에 이미 모든 문자 참조를
+        # 디코딩한다. 여기서 unescape 를 또 호출하면 이중 디코딩되어, 화면에 리터럴로
+        # 표시하려고 이중 인코딩한 콘텐츠(예: storage HTML 의 ``&amp;lt;`` = 표시상 ``&lt;``)가
+        # ``<`` 로 손상된다. 따라서 추가 unescape 없이 data 를 그대로 사용한다.
+        if data:
+            self._parts.append(data)
 
     def text(self) -> str:
         return "".join(self._parts)
