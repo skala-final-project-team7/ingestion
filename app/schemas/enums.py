@@ -112,6 +112,21 @@ class IngestionStatus(StrEnum):
     TOKENIZER_FAIL = "TOKENIZER_FAIL"
 
 
+class IngestJobStatus(StrEnum):
+    """수집 잡 **수명주기** 상태 — api-spec v2.2.0 §1-4/§2-3 (`POST /ml/ingest` 트리거 →
+    `GET /ml/ingest/status/{jobId}` 조회).
+
+    페이지 단위 처리 결과인 ``IngestionStatus``(SUCCESS/PARTIAL_PARSE/…)와는 다른 개념으로,
+    수집 잡 1건 전체의 진행 단계를 나타낸다. 값은 "Enum 값 표기 정책"의 UPPER_SNAKE 를 따른다
+    (수집·동기화 status). 흐름: ``STARTED`` → ``IN_PROGRESS`` → (``COMPLETED`` | ``FAILED``).
+    """
+
+    STARTED = "STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class LlmModel(StrEnum):
     """LLM 모델 — 답변 생성(GPT-4o) / 보조(GPT-4o-mini: 라우터·검증·히스토리·문서분석기)."""
 

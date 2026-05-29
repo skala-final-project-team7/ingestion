@@ -9,6 +9,9 @@ dependencies = [
     "pydantic-settings>=2.3",      # app/config.py 환경 변수 설정
     "httpx>=0.27",
     "tenacity>=8.3",               # Confluence/외부 호출 재시도
+    # --- 수집 HTTP API (api-spec §2-2/§2-3/§2-4-2: /ml/ingest, status, health) ---
+    "fastapi>=0.111",              # 수집 트리거/상태/헬스 HTTP 엔드포인트
+    "uvicorn>=0.30",               # ASGI 서버 (app.api.main:app 실행 진입점)
     # --- LLM (문서 분석기 — doc_type 분류, FR-003 [Agent]) ---
     "openai>=1.30",                # GPT-4o-mini + Function Calling (스페이스 단위 doc_type 판별)
     "tiktoken>=0.7",               # 토큰 카운팅
