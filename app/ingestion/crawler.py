@@ -53,7 +53,11 @@ from app.storage.raw_store import RawPageStore
 class CrawlRequest:
     """Full Crawl 트리거 입력 (관리자 대시보드 / 스케줄러)."""
 
-    space_key: str
+    # api-spec v2.4.0 §2-2 — 요청 스페이스 스코프 파라미터 제거. 빈 값(기본)이면 어댑터가 admin
+    # Key 로 접근 가능한 **전체 스페이스**를 수집한다(``run_full_crawl`` 의 space_key 필터 미적용).
+    # 값이 있으면 해당 스페이스로 좁힌다(스케줄러 단일 스페이스 재색인 등 내부 용도 — /ml/ingest
+    # API 표면에는 노출하지 않는다).
+    space_key: str = ""
     # PoC: BFF→Ingestion 전달(미확정 TBD). 로그·메시지 페이로드에 남기지 않는다.
     access_token: str | None = None
     cloud_id: str | None = None

@@ -2,7 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
-작성목적 : api-spec v2.2.0 §2-2/§2-3/§2-4-2 의 수집(Data Ingestion) HTTP 계약을 제공한다.
+작성목적 : api-spec v2.4.0 §2-2/§2-3/§2-4-2 의 수집(Data Ingestion) HTTP 계약을 제공한다.
           ``POST /ml/ingest`` 는 잡을 생성(``STARTED``)하고 백그라운드에서 crawl→chunk→
           upsert 를 실행하며, ``GET /ml/ingest/status/{jobId}`` 가 진행 상태·집계 카운트를,
           ``GET /ml/ingest/health`` 가 서버 가용성을 반환한다. 응답은 BFF 가 공통 Wrapper 로
@@ -12,6 +12,9 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-29, 최초 작성 — IngestRequest(spaceKey/mode/accessToken/cloudId) + POST 트리거
     (BackgroundTasks 로 비동기 크롤) + status 조회(KST startedAt) + health.
+  - 2026-06-04, api-spec v2.4.0 정합 — IngestRequest 에서 ``spaceKey`` 필드 **제거**(스페이스
+    스코프 파라미터 없음 — admin Key 로 접근 가능한 전체 스페이스 iterate, 2026-06-04 결정).
+    요청 본문은 ``mode``/``accessToken``/``cloudId`` 만. CrawlRequest 는 space_key 미지정(전체).
 --------------------------------------------------
 [보안] 요청 ``accessToken``/``cloudId`` 는 로그·응답 본문에 남기지 않는다(루트 CLAUDE.md
        보안 규칙). 상태 응답에도 토큰 관련 필드를 포함하지 않는다.
@@ -54,20 +57,22 @@ def _to_kst(dt: datetime) -> str:
 
 
 class IngestRequest(BaseModel):
-    """``POST /ml/ingest`` 요청 본문 (api-spec v2.2.0 §2-2).
+    """``POST /ml/ingest`` 요청 본문 (api-spec v2.4.0 §2-2).
 
-    BFF 는 camelCase JSON(``spaceKey``/``accessToken``/``cloudId``)을 보낸다.
+    BFF 는 camelCase JSON(``accessToken``/``cloudId``)을 보낸다.
     ``populate_by_name=True`` 로 snake_case 입력도 허용한다(테스트 편의).
+
+    api-spec v2.4.0 §2-2 — **스페이스 스코프 파라미터(``spaceKey``) 없음**. admin Key 로 admin 이
+    접근 가능한 **전체 스페이스**를 ML 이 iterate 하며 수집한다(2026-06-04 결정).
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    space_key: str = Field(..., min_length=1, alias="spaceKey", description="수집 대상 스페이스 키")
     mode: str = Field(default="full", description="수집 모드 — full(전체) | delta(변경분)")
     access_token: str | None = Field(
         default=None,
         alias="accessToken",
-        description="Confluence OAuth access token(PoC, 로그 금지)",
+        description="admin Confluence OAuth access token(PoC, 로그 금지)",
     )
     cloud_id: str | None = Field(default=None, alias="cloudId", description="Confluence cloudId")
 
@@ -128,17 +133,18 @@ async def ingest_route(
     background_tasks: BackgroundTasks,
     deps: IngestDepsDep,
 ) -> dict[str, Any]:
-    """수집 트리거 (api-spec v2.2.0 §2-2).
+    """수집 트리거 (api-spec v2.4.0 §2-2).
 
     잡을 ``STARTED`` 로 생성하고 백그라운드 태스크로 crawl→chunk→upsert 를 실행한 뒤,
     즉시 ``jobId`` / ``status`` / ``startedAt``(KST)을 반환한다. 진행 상태는
-    ``GET /ml/ingest/status/{jobId}`` 로 조회한다.
+    ``GET /ml/ingest/status/{jobId}`` 로 조회한다. 스페이스 스코프 파라미터는 없으며(v2.4.0),
+    admin Key 로 접근 가능한 전체 스페이스를 수집한다.
     """
     job = deps.job_store.create()
     # mode 는 검증만 하고(2단계 PoC) full-crawl 합성 파이프라인으로 처리한다. delta sync
     # 에이전트(data_sync_agent) 배선은 후속 — 토큰은 CrawlRequest 로만 전달하고 로깅하지 않는다.
+    # space_key 미지정(기본 "") → 어댑터가 접근 가능한 전체 스페이스 수집(api-spec v2.4.0 §2-2).
     crawl_request = CrawlRequest(
-        space_key=payload.space_key,
         access_token=payload.access_token,
         cloud_id=payload.cloud_id,
     )

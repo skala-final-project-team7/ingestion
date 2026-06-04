@@ -447,3 +447,25 @@ Python 3.10 + qdrant/fastapi 미설치). 신규/확장 테스트: `test_soft_del
 
 **후속(TBD)**: 주기 Trash 동기화 스케줄러 + webhook 실엔드포인트 배포 + pika 실행 loop(featureI-7c
 인프라 의존). Delta 확인 게이트의 운영 자동화 정책 합의.
+
+## 2026-06-04 — api-spec v2.4.0 정합: `/ml/ingest` 에서 spaceKey 제거
+
+사용자가 전달한 LINA API Spec v2.4.0 §2-2 정합 — 수집 요청에서 스페이스 스코프 파라미터를
+제거했다. admin Key 로 admin 이 접근 가능한 **전체 스페이스**를 ML 이 iterate 하며 수집한다
+(2026-06-04 결정, `/api/admin/ingest` 와 동일 모델).
+
+**변경**
+
+- `app/api/routes.py` — `IngestRequest` 에서 `space_key`(alias `spaceKey`, 기존 Required) 필드
+  **제거**. 요청 본문은 `mode`/`accessToken`/`cloudId` 만. `ingest_route` 는 `CrawlRequest` 를
+  space_key 없이 구성(전체 스페이스). 모듈 changelog 보강.
+- `app/ingestion/crawler.py` — `CrawlRequest.space_key` 를 Required → **optional(기본 `""`)**.
+  빈 값이면 `run_full_crawl` 의 space_key 필터가 적용되지 않아 어댑터가 넘기는 전체 페이지를
+  수집한다(= 전체 스페이스). 값이 있으면 단일 스페이스로 좁힘(스케줄러 내부 용도 — API 미노출).
+- 테스트 — `tests/api/test_ingest_route.py`: 요청 payload 에서 `spaceKey` 제거(`{"mode":"full"}`/
+  `{}`), 빈 본문 200 회귀 추가. 기존 `CrawlRequest(space_key="ENG")` 호출(crawler/pipeline 테스트)은
+  명시 인자라 무변경.
+
+**검증**: repo 전체 `ruff check .` + format + py_compile 통과. 실 `IngestRequest` 격리 exec 로
+명세 페이로드(`mode`/`accessToken`/`cloudId`) 검증 + spaceKey 부재·빈 본문·bad mode 422 확인.
+`CrawlRequest()` 기본 `space_key=""`(전체) 확인. 전체 pytest·`./scripts/verify.sh` 는 Mac/3.11.
