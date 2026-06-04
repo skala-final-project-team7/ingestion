@@ -64,7 +64,8 @@ async def test_ingest_trigger_then_status_completed() -> None:
     """POST /ml/ingest → STARTED + jobId, 백그라운드 완료 후 status=COMPLETED + 카운트 집계."""
     deps = _stub_deps()
     async with _client(deps) as client:
-        resp = await client.post("/ml/ingest", json={"spaceKey": "CPC"})
+        # api-spec v2.4.0 §2-2 — spaceKey 없음. mode 만(또는 빈 본문)으로 전체 스페이스 수집.
+        resp = await client.post("/ml/ingest", json={"mode": "full"})
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "STARTED"
@@ -103,5 +104,14 @@ async def test_ingest_status_unknown_job_returns_404_envelope() -> None:
 async def test_ingest_rejects_invalid_mode() -> None:
     """mode 는 full | delta 만 허용 — 그 외 값은 422(Pydantic 검증)."""
     async with _client(_stub_deps()) as client:
-        resp = await client.post("/ml/ingest", json={"spaceKey": "CPC", "mode": "bogus"})
+        resp = await client.post("/ml/ingest", json={"mode": "bogus"})
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_ingest_accepts_empty_body_no_space_key() -> None:
+    """api-spec v2.4.0 §2-2 — spaceKey 제거. 빈 본문도 허용(mode 기본 full, 전체 스페이스 수집)."""
+    async with _client(_stub_deps()) as client:
+        resp = await client.post("/ml/ingest", json={})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "STARTED"
