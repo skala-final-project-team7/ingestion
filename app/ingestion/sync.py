@@ -119,9 +119,10 @@ def reconcile_deletions(
 # 한다(확정 삭제 아님 — requires_confirmation). 위 ``reconcile_deletions`` 는 무수정 보존.
 #
 # 3중 삭제 동기화 중 Reconciliation 은 위 함수, Delta Sync 의 deleted_candidate 감지는
-# 아래 어댑터가 담당한다. Trash API / Webhook 은 에이전트 MVP·본 레포 모두 제외(TBD).
-# 실제 Qdrant soft_delete 실행은 store 를 소유한 Sync Worker(featureI-5 후속)의 책임이라
-# 본 어댑터는 후보 page_id 만 반환한다(추측 구현 금지).
+# 아래 어댑터가 담당한다. Trash API / Webhook 은 에이전트 MVP 에는 없고, 본 레포는
+# featureI-5b 에서 app/adapters/confluence_trash.py + app/api/webhook_routes.py +
+# app/ingestion/workers/sync_worker.py 로 구현했다. 실제 Qdrant soft_delete 실행은
+# store 를 소유한 Sync Worker 의 책임이라 본 어댑터는 후보 page_id 만 반환한다(추측 구현 금지).
 # ==========================================================================
 
 

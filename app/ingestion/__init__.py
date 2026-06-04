@@ -17,9 +17,9 @@
 구현 상태:
 - attachment_analyzer.py  AttachmentAnalysisResult + analyze_attachment [feature6 Phase 1]
 - sync.py                 ReconciliationResult + reconcile_deletions [feature6 Phase 3]
-- chunker/                feature3-A·3-B·4-A 완료 (PDF/CSV = feature4-B 대기)
+- chunker/                feature3·4 완료 (본문 6유형 + 첨부 PDF/Word/Excel/CSV)
 - embedding.py / vector_store.py / indexer.py  feature5-A·5-B 완료
-- document_analyzer.py    미구현 (계획 — Agent 담당자 몫)
+- document_analyzer.py    구현 완료 (featureI-7b — DocTypeClassifier/OpenAI·Fake + bootstrap 배선)
 - jobs.py                 app/storage/jobs.py 로 이전 (외부 저장소 어댑터 일관성, feature6 Phase 2)
 """
 

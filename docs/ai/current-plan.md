@@ -301,7 +301,7 @@
 
 ## Milestone D — 데이터 동기화 에이전트 (FR-005)
 
-### featureI-5: 데이터 동기화 에이전트 — Delta Sync + 3중 삭제 동기화 (FR-005)  ✅ featureI-6 으로 구현(Delta+Reconcile / Trash·Webhook TBD)
+### featureI-5: 데이터 동기화 에이전트 — Delta Sync + 3중 삭제 동기화 (FR-005)  ✅ Delta+Reconcile=featureI-6 / Trash·Webhook 트리거=featureI-5b
 
 > **구현 경로**: 본 feature도 **featureI-6(외부 에이전트 vendoring 통합)**으로 구현한다. Data Sync Agent를
 > 무수정 vendoring하고 `app/ingestion/sync.py`(기존 `reconcile_deletions` 보존) + 어댑터로 잇는다.
