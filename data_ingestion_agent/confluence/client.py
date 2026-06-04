@@ -152,9 +152,7 @@ class ConfluenceClient:
         self.config = config
         self.transport = transport or UrllibConfluenceTransport()
         self.sleeper = sleeper
-        self.base_url = (
-            f"{CONFLUENCE_API_ORIGIN}/ex/confluence/{config.cloud_id}/wiki/api/v2"
-        )
+        self.base_url = f"{CONFLUENCE_API_ORIGIN}/ex/confluence/{config.cloud_id}/wiki/api/v2"
 
     def list_spaces(self) -> list[dict[str, Any]]:
         """접근 가능한 Confluence Space 목록을 pagination 처리해 반환한다."""
@@ -181,6 +179,17 @@ class ConfluenceClient:
             },
         )
         return response_body
+
+    def get_page_read_restrictions(self, page_id: str) -> dict[str, Any]:
+        """Page read restriction을 조회한다.
+
+        Confluence v2 page 조회 응답에는 권한 정보가 직접 포함되지 않는다. 운영 ACL
+        payload(`allowed_users`/`allowed_groups`)를 만들기 위해 v1 content restriction
+        endpoint를 별도로 호출한다.
+        """
+        if not page_id:
+            raise ValueError("page_id is required")
+        return self._request_json(f"/rest/api/content/{page_id}/restriction/byOperation/read")
 
     def _get_paginated(
         self,
@@ -276,10 +285,13 @@ class ConfluenceClient:
         )
 
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.config.access_token}",
         }
+        if self.config.use_admin_key:
+            headers["Atl-Confluence-With-Admin-Key"] = "true"
+        return headers
 
     def _build_url(
         self,
@@ -290,8 +302,15 @@ class ConfluenceClient:
             return path_or_url
 
         path_with_query = self._build_path_with_query(path_or_url, query or {})
-        if path_with_query.startswith("/wiki/api/v2/"):
+        if path_with_query.startswith("/wiki/api/v2/") or path_with_query.startswith(
+            "/wiki/rest/api/"
+        ):
             return urljoin(CONFLUENCE_API_ORIGIN, path_with_query)
+        if path_with_query.startswith("/rest/api/"):
+            return (
+                f"{CONFLUENCE_API_ORIGIN}/ex/confluence/{self.config.cloud_id}/wiki"
+                f"{path_with_query}"
+            )
         return f"{self.base_url}{path_with_query}"
 
     @staticmethod
