@@ -65,7 +65,9 @@ class IngestRequest(BaseModel):
     space_key: str = Field(..., min_length=1, alias="spaceKey", description="수집 대상 스페이스 키")
     mode: str = Field(default="full", description="수집 모드 — full(전체) | delta(변경분)")
     access_token: str | None = Field(
-        default=None, alias="accessToken", description="Confluence OAuth access token(PoC, 로그 금지)"
+        default=None,
+        alias="accessToken",
+        description="Confluence OAuth access token(PoC, 로그 금지)",
     )
     cloud_id: str | None = Field(default=None, alias="cloudId", description="Confluence cloudId")
 

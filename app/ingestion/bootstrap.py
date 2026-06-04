@@ -34,6 +34,7 @@ from app.storage.raw_store import FakeRawPageStore, RawPageStore
 
 if TYPE_CHECKING:
     from app.ingestion.document_analyzer import DocumentAnalyzer
+    from app.ingestion.soft_delete import SoftDeleteStore
 
 
 def build_raw_page_store(settings: Settings | None = None) -> RawPageStore:
@@ -111,3 +112,27 @@ def build_chunking_worker_deps(
         jobs=MongoIngestionJobsRepository.from_settings(resolved),
         doc_type_resolver=build_document_analyzer(resolved),
     )
+
+
+def build_soft_delete_store(settings: Settings | None = None) -> SoftDeleteStore:
+    """삭제 트리거(Sync Worker)가 사용할 soft-delete store 를 조립한다(featureI-5b).
+
+    soft-delete 는 기존 Point 의 payload ``is_deleted`` 만 set(set_payload)하므로 임베딩
+    차원과 무관하다(컬렉션은 ingest 경로가 생성). 따라서 실 모드는 임베더 로딩 없이
+    ``from_settings`` 기본값으로 운영 Qdrant 에 연결한다(이미 존재하는 컬렉션 → create no-op).
+
+    - **PoC** (``use_real_adapters=False``): in-memory ``FakeQdrantPoolStore``. 단, HTTP
+      ingest 합성 파이프라인(``run_poc_ingestion``)은 자체 내부 Fake store 를 쓰므로 본
+      store 와 분리돼 있어 webhook soft-delete 가 no-op 일 수 있다(PoC 데모 한계 — 문서화).
+    - **실** (``use_real_adapters=True``): 운영 ``QdrantPoolStore`` 로 연결해 공유 Qdrant 의
+      Point 를 soft-delete 한다(ingest 와 동일 컬렉션).
+
+    주기 Trash 동기화·RabbitMQ 실행 loop 는 인프라 의존 후속(featureI-7c)이며, 본 함수는
+    **store 조립**만 책임진다.
+    """
+    resolved = settings or get_settings()
+    if not resolved.use_real_adapters:
+        return FakeQdrantPoolStore()
+    from app.storage.qdrant_client import QdrantPoolStore
+
+    return QdrantPoolStore.from_settings(resolved)
