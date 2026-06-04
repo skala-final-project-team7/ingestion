@@ -54,6 +54,24 @@ class Settings(BaseSettings):
     atlassian_request_delay_seconds: float = 0.3
     atlassian_max_retries: int = 3
     atlassian_timeout_seconds: int = 20
+    # True면 Confluence API 요청에 Atl-Confluence-With-Admin-Key header를 포함하고,
+    # page-level read restriction(/rest/api/content/{id}/restriction/byOperation/read)을
+    # 조회해 allowed_groups/allowed_users를 산출한다. False(기본)면 PoC space_key 합성.
+    # Admin Key 활성화/만료는 backend/infra 운영 영역이며, 본 설정은 header만 제어한다.
+    atlassian_use_admin_key: bool = False
+    # read restriction의 group 결과를 allowed_groups로 변환할 때 사용할 식별자 우선순위.
+    # RAG JWT groups claim과 같은 문자열이어야 검색 ACL이 매칭된다(공유 계약).
+    atlassian_group_acl_field_order: str = "id,groupId,name"
+    # group 값 앞에 붙일 prefix. 기본값은 무변환이며, 예: "confluence-group:".
+    atlassian_group_acl_prefix: str = ""
+    # page-level read restriction이 비어 있을 때의 처리 정책.
+    # allow_authenticated(기본): public_acl_group sentinel 부여 → 모든 인증 사용자 허용.
+    # space_fallback: space:{space_key} ACL 합성(공간 단위). mark_missing: 빈 ACL → INVALID_ACL.
+    atlassian_empty_restriction_policy: str = "allow_authenticated"
+    # allow_authenticated 정책에서 부여할 "모든 인증 사용자" sentinel group 토큰.
+    # 이 토큰이 실제 검색 허용이 되려면 RAG build_acl_filter가 동일 토큰을 모든
+    # principal 그룹에 주입해야 한다(ingestion↔rag 공유 계약 — docs/db-schema.md §1.4).
+    atlassian_public_acl_group: str = "*"
 
     # --- Qdrant Multi-Pool Vector Store ---
     qdrant_host: str = "localhost"

@@ -31,6 +31,7 @@ class DataIngestionConfig:
         request_delay_seconds: 요청 사이 기본 지연 시간.
         max_retries: retryable 요청의 최대 재시도 횟수.
         timeout_seconds: 외부 API 요청 timeout.
+        use_admin_key: Confluence Admin Key header를 요청에 포함할지 여부.
 
     Raises:
         ValueError: 필수값이 비어 있거나 retry 설정이 유효하지 않은 경우.
@@ -42,6 +43,7 @@ class DataIngestionConfig:
     request_delay_seconds: float = 0.3
     max_retries: int = 3
     timeout_seconds: int = 20
+    use_admin_key: bool = False
 
     def __post_init__(self) -> None:
         self.output_dir = Path(self.output_dir)
@@ -69,4 +71,5 @@ class DataIngestionConfig:
             "request_delay_seconds": self.request_delay_seconds,
             "max_retries": self.max_retries,
             "timeout_seconds": self.timeout_seconds,
+            "use_admin_key": self.use_admin_key,
         }
