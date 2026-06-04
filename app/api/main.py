@@ -26,6 +26,7 @@ from fastapi import FastAPI
 
 from app.api.deps import build_ingest_deps
 from app.api.routes import router as ingest_router
+from app.api.webhook_routes import webhook_router
 from app.config import get_settings
 
 
@@ -55,6 +56,7 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
     app.include_router(ingest_router)
+    app.include_router(webhook_router)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

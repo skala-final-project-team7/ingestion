@@ -20,7 +20,9 @@ from app.api.deps import IngestDeps
 from app.api.main import create_app
 from app.api.routes import get_deps
 from app.ingestion.crawler import CrawlRequest, CrawlResult
+from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps
 from app.storage.ingest_jobs import InMemoryIngestJobStore
+from app.storage.qdrant_fake import FakeQdrantPoolStore
 
 
 def _stub_deps() -> IngestDeps:
@@ -33,7 +35,11 @@ def _stub_deps() -> IngestDeps:
             failed_page_ids=["p-bad"],
         )
 
-    return IngestDeps(job_store=InMemoryIngestJobStore(), run_crawl=_run_crawl)
+    return IngestDeps(
+        job_store=InMemoryIngestJobStore(),
+        run_crawl=_run_crawl,
+        sync_worker=SyncWorker(SyncWorkerDeps(store=FakeQdrantPoolStore())),
+    )
 
 
 def _client(deps: IngestDeps) -> httpx.AsyncClient:

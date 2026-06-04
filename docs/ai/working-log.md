@@ -402,3 +402,48 @@ ValueError→CHUNK·멱등성·누락 첨부/부모 페이지·본문+첨부 혼
 `local_path`/`extracted_text` 채움, 인프라 의존). ② pika consumer/publisher 실행 loop
 (featureI-7c 와 공통 — RabbitMQ 연결). vendored 에이전트 MVP 가 첨부를 수집하면 본 체인이
 그대로 동작한다(현재 `attachments=[]`).
+
+---
+
+## 2026-06-04 — featureI-5b: 3중 삭제 동기화 트리거 배선 (soft_delete wiring, FR-005)
+
+**작업**: ADR 0003 항목 4로 능력만 도입돼 있던 soft_delete(`store.soft_delete_by_*`)에 실제
+**트리거 3종**(Delta `deleted_candidate` / Confluence Trash API / 실시간 Webhook)을 배선했다. 세
+경로가 단일 funnel `apply_soft_deletes` 로 수렴해 Qdrant payload `is_deleted=true` 를 set 한다.
+
+**구현(신규)**
+
+- `app/ingestion/soft_delete.py` — `SoftDeleteStore` Protocol + `SoftDeleteResult` + `apply_soft_deletes`
+  (dedup·정렬·id별 try/except 격리 → 부분 성공 + 실패 목록). 외부 의존성 0.
+- `app/ingestion/workers/sync_worker.py` — `SyncWorker`(store 소유): `apply_delta_deletions(confirm=)`
+  (**확인 게이트 보존** — 기본 미적용, confirm 시에만 후보 soft_delete), `run_trash_sync`,
+  `handle_webhook_event`. `WebhookDeleteEvent` 값 객체.
+- `app/adapters/confluence_trash.py` — `TrashedIds`/`TrashSource`/`FakeTrashSource` +
+  `parse_trashed_content`(순수) + `ConfluenceTrashSource`(스페이스별 `_links.next` 페이지네이션) +
+  `ConfluenceTrashContentClient`(실 urllib, transport 주입). vendored 무수정 — 본 어댑터가 직접 호출.
+- `app/api/webhook_routes.py` — `POST /ml/confluence/webhook` + `parse_confluence_delete_event`
+  (인식된 삭제 이벤트만 처리, 비삭제·형식오류는 no-op). 인증은 BFF 책임(미들웨어 미추가).
+
+**구현(수정)**
+
+- `app/ingestion/bootstrap.py` — `build_soft_delete_store`(PoC Fake / 실 Qdrant, set_payload 전용).
+- `app/api/deps.py` — `IngestDeps.sync_worker` 추가 + `build_ingest_deps` 조립(HTTP 는 webhook 만 쓰므로
+  trash_source 미주입). `app/api/main.py` — webhook 라우터 include.
+- `tests/api/test_ingest_route.py` — `IngestDeps` 신규 필드 반영(stub deps 에 sync_worker 추가).
+
+**설계 메모**
+
+- **확인 게이트**: `run_delta_sync` 의 surface-only 정책을 보존한다 — `apply_delta_deletions` 는 기본
+  `confirm=False` 면 무적용. 자동 confirm 여부는 운영 합의 후 토글(미정).
+- **Reconciliation 무수정**: 주1회 ghost 제거(`sync.reconcile_deletions`)는 hard delete 유지(직교).
+- **PoC 한계**: PoC 모드의 HTTP ingest 합성 파이프라인은 자체 내부 Fake store 를 쓰므로 webhook
+  soft-delete store 와 분리된다(데모상 no-op 가능). 실 어댑터(`use_real_adapters=True`)는 공유 Qdrant 정상.
+
+**검증**: ruff check/format(12파일 clean) + py_compile 전 파일 통과. 신규 4모듈(soft_delete/
+confluence_trash/sync_worker/webhook parser)은 격리 실행으로 로직 검증(funnel 격리·페이지네이션·확인
+게이트·`is_deleted` set·파서 이벤트 분류). **전체 pytest·`./scripts/verify.sh` 는 Mac/3.11**(샌드박스
+Python 3.10 + qdrant/fastapi 미설치). 신규/확장 테스트: `test_soft_delete.py`, `test_sync_worker.py`
+(실 `FakeQdrantPoolStore` is_deleted 확인), `test_confluence_trash.py`, `test_webhook_route.py`(라우트 e2e).
+
+**후속(TBD)**: 주기 Trash 동기화 스케줄러 + webhook 실엔드포인트 배포 + pika 실행 loop(featureI-7c
+인프라 의존). Delta 확인 게이트의 운영 자동화 정책 합의.

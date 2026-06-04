@@ -25,9 +25,11 @@ from dataclasses import dataclass
 from app.adapters.base import DocumentSourceAdapter
 from app.adapters.factory import build_source_adapter
 from app.config import Settings
+from app.ingestion.bootstrap import build_soft_delete_store
 from app.ingestion.crawler import CrawlRequest, CrawlResult
 from app.ingestion.pipeline import run_poc_ingestion
-from app.storage.ingest_jobs import InMemoryIngestJobStore, IngestJobStore
+from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps
+from app.storage.ingest_jobs import IngestJobStore, InMemoryIngestJobStore
 
 # 크롤 러너 시그니처 — ``CrawlRequest`` 를 받아 집계 ``CrawlResult`` 를 돌려준다.
 CrawlRunner = Callable[[CrawlRequest], CrawlResult]
@@ -39,6 +41,7 @@ class IngestDeps:
 
     job_store: IngestJobStore
     run_crawl: CrawlRunner
+    sync_worker: SyncWorker
 
 
 def build_ingest_deps(settings: Settings) -> IngestDeps:
@@ -64,4 +67,13 @@ def build_ingest_deps(settings: Settings) -> IngestDeps:
         result, _components = run_poc_ingestion(request, source)
         return result.crawl
 
-    return IngestDeps(job_store=InMemoryIngestJobStore(), run_crawl=_run_crawl)
+    # 삭제 트리거(Webhook 라우트)용 Sync Worker — soft-delete store 를 소유한다(featureI-5b).
+    # HTTP 경로는 실시간 webhook 만 쓰므로 trash_source 는 주입하지 않는다(주기 Trash 동기화는
+    # 스케줄러/실행 loop 책임 — featureI-7c). PoC store 는 ingest 합성 파이프라인과 분리된다.
+    sync_worker = SyncWorker(SyncWorkerDeps(store=build_soft_delete_store(settings)))
+
+    return IngestDeps(
+        job_store=InMemoryIngestJobStore(),
+        run_crawl=_run_crawl,
+        sync_worker=sync_worker,
+    )
