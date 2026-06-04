@@ -10,6 +10,11 @@
 작성일 : 2026-05-29 (api-spec v2.2.0 §2-2/§2-3/§2-4-2)
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-29, 최초 작성 — create_app + lifespan(build_ingest_deps) + 헬스 라우트(/healthz).
+  - 2026-06-04, /metrics 노출 — Prometheus instrumentator wiring 추가(RAG Pipeline 앱과
+    동일 패턴). HTTP 표준 메트릭(요청 수·지연 히스토그램·상태 코드별 카운터)을 ``/metrics`` 로
+    노출한다. BFF 인증을 우회하는 Prometheus scraper 직접 접근 경로이며 OpenAPI 스키마에서는
+    제외(include_in_schema=False)한다. 워커 커스텀 메트릭(prometheus-client)은 워커 프로세스가
+    별도로 노출한다.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, FastAPI 0.111+
@@ -23,6 +28,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.deps import build_ingest_deps
 from app.api.routes import router as ingest_router
@@ -57,6 +63,17 @@ def create_app() -> FastAPI:
     )
     app.include_router(ingest_router)
     app.include_router(webhook_router)
+
+    # 운영 모니터링 — Prometheus instrumentator. ``/metrics`` 로 HTTP 표준 메트릭
+    # (요청 수·지연 히스토그램·상태 코드별 카운터)을 노출한다. RAG Pipeline 앱과 동일
+    # 패턴 — BFF 인증을 우회하는 Prometheus scraper 직접 접근 경로이며 OpenAPI 스키마에서는
+    # 제외(include_in_schema=False)한다. 워커 잡 카운터·지연(prometheus-client)은 워커
+    # 프로세스가 별도로 노출한다.
+    Instrumentator().instrument(app).expose(
+        app,
+        endpoint="/metrics",
+        include_in_schema=False,
+    )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

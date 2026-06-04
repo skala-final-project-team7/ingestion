@@ -18,12 +18,38 @@ RabbitMQ 기반 비동기 파이프라인으로 동작한다.
 
 자세한 흐름은 `docs/architecture.md`, 진행 계획은 `docs/ai/current-plan.md` 참조.
 
+## 실행 · 통합 계약 (인프라 담당자용)
+
+> 컨테이너화·CI·배포는 인프라에서 담당한다. 통합에 필요한 계약을 아래 한 곳에 모은다.
+
+| 항목 | 값 |
+|---|---|
+| 기동 | `uvicorn app.api.main:app --host 0.0.0.0 --port 8001` |
+| 엔드포인트 | `POST /ml/ingest` · `GET /ml/ingest/status/{job_id}` · `GET /ml/ingest/health` · `POST /ml/confluence/webhook` · `GET /healthz` · `GET /metrics`(Prometheus) |
+| Python | 3.11.x (`>=3.11,<3.12`) |
+| 부팅 필수 설치 | `pip install -e ".[ingestion]"` — **base 설치(`pip install -e .`)만으로는 부팅 불가** (import 시 chunker 가 PyMuPDF·python-docx·openpyxl·BeautifulSoup4 를 끌어옴) |
+| 운영(real) 모드 추가 | `[embedding]`(torch·sentence-transformers 약 2.4GB, lazy) · `[agents]`(LangGraph; 미설치 시 sequential fallback). `RAG_USE_REAL_ADAPTERS=true` |
+| 외부 의존 | **RabbitMQ(필수)** · Qdrant · MongoDB · MySQL · OpenAI · Confluence(`RAG_SOURCE_TYPE=atlassian` 모드) |
+| 환경변수 | `.env.example` 참조 — 전 항목 PoC 기본값 有, 시크릿은 `RAG_OPENAI_API_KEY` · `RAG_ATLASSIAN_ACCESS_TOKEN` |
+| env 프리픽스 | `RAG_` — **`rag` 레포와 동일 env 네임스페이스를 의도적으로 공유**(같은 Qdrant/Mongo/MySQL 을 가리킴). 두 서비스를 하나의 ConfigMap/`.env` 로 합칠 경우 값이 동일해야 충돌하지 않는다 |
+| 인증 · CORS | 본 앱은 미들웨어 없음 — **BFF 가 담당** |
+| 헬스 체크 성격 | `/healthz`·`/ml/ingest/health` 는 **liveness 전용**(항상 `UP`/`ok`, 의존성·RabbitMQ 끊김은 보고하지 않음) |
+
+> `rag` 레포의 `docker-compose.yml` 이 공용 백킹 서비스(Qdrant/MongoDB/MySQL)를 띄운다. RabbitMQ 는
+> 어느 compose 에도 없으므로 인프라가 별도 제공한다.
+
 ## 개발 환경
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Python 3.11
 pip install -e ".[ingestion,embedding,dev]"
 ```
+
+> **부팅 필수 extra:** `pip install -e .` (extra 없이) 만으로는 **앱이 기동되지 않는다**.
+> `app.api.main` import 시 chunker 가 PyMuPDF·python-docx·openpyxl·BeautifulSoup4(= `ingestion`
+> extra)를 끌어오기 때문이다. 따라서 **최소 `pip install -e ".[ingestion]"`** 이 필요하다.
+> `embedding` extra(torch·sentence-transformers, 약 2.4GB)는 lazy 로딩이라 운영(real) 모드에서만
+> 필요하다.
 
 ## 검증
 

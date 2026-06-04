@@ -24,6 +24,7 @@ dependencies = [
     "pymysql>=1.1",
     # --- 운영 모니터링 ---
     "prometheus-client>=0.20",     # Worker 커스텀 메트릭 (수집/청킹/임베딩 잡 카운터·지연)
+    "prometheus-fastapi-instrumentator>=7.0",  # HTTP API /metrics (RAG Pipeline 앱과 동일 패턴)
 ]
 
 [project.optional-dependencies]
