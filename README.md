@@ -1,5 +1,14 @@
 # LINA Data Ingestion Pipeline
 
+![Last commit](https://img.shields.io/github/last-commit/skala-final-project-team7/ingestion?style=flat-square)
+![Issues](https://img.shields.io/github/issues/skala-final-project-team7/ingestion?style=flat-square)
+![PRs](https://img.shields.io/github/issues-pr/skala-final-project-team7/ingestion?style=flat-square)
+![Top language](https://img.shields.io/github/languages/top/skala-final-project-team7/ingestion?style=flat-square)
+
+![Python 3.11](https://img.shields.io/badge/Python_3.11-3776AB?style=flat-square&logo=python&logoColor=white)
+![RabbitMQ](https://img.shields.io/badge/RabbitMQ-FF6600?style=flat-square&logo=rabbitmq&logoColor=white)
+![MongoDB](https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white)
+
 척척학사(LINA) Confluence 기반 RAG 챗봇 서비스의 **데이터 수집 파이프라인**.
 Confluence 문서·첨부를 수집(Full Crawl / Delta Sync)하여 첨부 텍스트 추출 → Adaptive Chunking →
 Dual Embedding 색인까지 수행한다. RAG Pipeline(질의/응답, `../rag`)과 분리된 독립 배포 단위이며,
