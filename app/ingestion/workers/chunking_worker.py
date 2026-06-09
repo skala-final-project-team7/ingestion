@@ -17,6 +17,8 @@
     (파일 직접 읽기) → index_chunks(attachment_download_urls) 흐름이다. rag 레포의 ingestion
     그래프와 동일하게 파일 기반 chunk_attachment 를 사용하며 별도 attachment_texts 컬렉션은
     청킹 경로에 두지 않는다(extracted_text 는 raw_attachments 에 함께 적재).
+  - 2026-06-09, FR-002 첨부 다운로더 배선 — ``ChunkingWorkerDeps.attachment_downloader`` 추가.
+    chunk_attachment 전에 ``ensure_local`` 로 download_url→local_path 를 채운다(기본 None=생략).
 --------------------------------------------------
 구현 메모(featureI-4/I-3b):
   - 외부 의존성(임베더/Qdrant/cache/raw_store/jobs)은 주입 가능하게 둔다(테스트는 Fake).
@@ -40,6 +42,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.ingestion.attachment_analyzer import analyze_attachment
+from app.ingestion.attachment_downloader import AttachmentDownloader
 from app.ingestion.chunker import chunk_attachment, chunk_page
 from app.ingestion.indexer import index_chunks
 from app.ingestion.workers.consumer import MessageConsumer
@@ -89,6 +92,9 @@ class ChunkingWorkerDeps:
     chunk_lookup: Any | None = None
     doc_type_resolver: Any | None = None
     chunk_attachment_fn: ChunkAttachmentFn = chunk_attachment
+    # FR-002 — 첨부 다운로더. None(기본)이면 다운로드 단계 생략(fixture 는 local_path 보유).
+    # 운영은 infra 진입점에서 HttpAttachmentDownloader 주입 → download_url 을 local_path 로 채운다.
+    attachment_downloader: AttachmentDownloader | None = None
 
 
 @dataclass(slots=True)
@@ -235,6 +241,12 @@ def _process_attachment_message(
         return ChunkingMessageResult(
             page_id=page_id, status=analysis.status, attachment_id=attachment_id
         )
+
+    # 첨부 파일이 로컬에 없으면(운영 어댑터는 download_url 만 제공) 다운로더로 받아 local_path 를
+    # 채운다(FR-002). 다운로드 실패(AttachmentDownloadError)는 운영성 오류라 상위 루프가 재시도/DLQ
+    # 한다(RawPageNotFoundError 와 동일 — 격리 status 로 삼키지 않는다).
+    if deps.attachment_downloader is not None:
+        attachment = deps.attachment_downloader.ensure_local(attachment)
 
     # 첨부 청킹 — chunk_attachment 는 첨부 파일을 직접 읽는다(테스트는 chunk_attachment_fn 주입).
     try:

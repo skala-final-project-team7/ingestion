@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     # True = /ml/ingest delta 잡이 후보를 SyncWorker.apply_delta_deletions(confirm=True)로 적용.
     data_sync_delta_delete_confirm: bool = False
 
+    # --- 첨부 다운로드 (FR-002) ---
+    # HttpAttachmentDownloader 가 Confluence download_url 바이너리를 저장할 로컬 디렉토리.
+    # 다운로더가 local_path 를 채우면 chunk_attachment(파일 직접 읽기)가 처리한다.
+    # 실 wiring(자격증명 헤더)은 infra 진입점에서 주입. fixture 는 이미 local_path 보유 → 미사용.
+    attachment_download_dir: str = "data/attachments"
+
     # --- OpenAI ---
     openai_api_key: SecretStr = SecretStr("")
     llm_answer_model: str = "gpt-4o"

@@ -559,3 +559,29 @@ True면 적용한다.
 
 **검증**: 변경 4파일 `ruff format`/`ruff check`(All checks passed) + `mypy app`(59 files, no issues)
 + py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11(샌드박스 3.11 부재).
+
+## 2026-06-09 — FR-002 첨부 다운로더 (download_url → local_path seam)
+
+`chunk_attachment` 는 첨부 파일을 파일 시스템에서 직접 읽으므로 `local_path` 가 필요한데, 운영 어댑터는
+`download_url` 만 제공한다(코드 주석이 명시한 "다운로드 헬퍼가 local_path 를 채우는 정공법"). 그 누락
+헬퍼를 추가했다.
+
+**변경**
+
+- `app/ingestion/attachment_downloader.py`(신규) — `AttachmentDownloader` Protocol +
+  `NoopAttachmentDownloader`(기본) + `HttpAttachmentDownloader`(httpx 주입형 client; download_url→
+  local_path, `local_path`/`file://` 는 네트워크 없이 통과) + `AttachmentDownloadError`(운영성 오류).
+- `app/config.py` — `attachment_download_dir`(다운로드 저장 경로).
+- `app/ingestion/workers/chunking_worker.py` — `ChunkingWorkerDeps.attachment_downloader`(기본 None)
+  추가; `_process_attachment_message` 가 `chunk_attachment` 전에 `ensure_local` 로 local_path 를
+  채운다. 다운로드 실패는 `AttachmentDownloadError` 로 전파 → 상위 consumer 가 재시도/DLQ
+  (RawPageNotFoundError 와 동일 정책; 격리 status 로 삼키지 않음).
+- `tests/ingestion/test_attachment_downloader.py`(신규) — 다운로더 단위(Noop/already-local/file:///
+  http fetch/HTTP 오류) + 배선 통합(주입 시 chunk_attachment 전 local_path 채움 / 미주입 시 생략).
+
+**범위 밖(후속)**: 실 `atlassian.py` 어댑터가 첨부 메타(download_url)를 산출하도록 하는 작업(vendored
+경계 — 현재 `attachments=[]`). 라이브 end-to-end 는 이 후속과 합쳐져야 동작한다. 운영
+`HttpAttachmentDownloader` wiring(자격증명 헤더)도 infra 진입점 후속.
+
+**검증**: 변경 4파일 `ruff format`/`ruff check`(All checks passed) + `mypy app`(60 files, no issues)
++ py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11(샌드박스 3.11 부재).
