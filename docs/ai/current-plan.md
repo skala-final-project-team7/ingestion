@@ -40,7 +40,12 @@
   adapters / storage / attachment_analyzer / sync (2026-05-26, import 경로 그대로 미러링)
 - [ ] **`pip install -e ".[ingestion,embedding,dev]"`** 후 import·테스트 통과 확인 (Mac/3.11)
 - [ ] **RabbitMQ / MongoDB / Qdrant 로컬 기동**(docker compose) — Worker 통합 테스트 전 필요
-- [ ] **Confluence access_token / cloudId 전달 경로** — BFF→Ingestion 전달 방식 확정 (요구사항정의서 §2-2)
+- [ ] **Confluence credential 전달 경로 (api-spec v2.5.0)** — preferred: BFF/RabbitMQ payload 에
+  credential 미포함, Worker 가 `adminUserId` 로 auth-server 내부 credential API 조회. `accessToken`/
+  `cloudId` 직접 전달은 legacy PoC 호환만 (요구사항정의서 §2-2)
+- [x] **수집 완료 이벤트 seam (api-spec v2.5.0)** — terminal(COMPLETED/FAILED) 직후 credential 없는
+  RabbitMQ completion event 발행(`app/api/ingest_completion.py`). 실 RabbitMQ publisher/consumer·
+  `adminUserId` credential lookup wiring 은 후속(featureI-7c).
 
 ---
 
@@ -113,7 +118,9 @@
 - [x] ★ **ACL 모델 결정 — 완료 (ADR 0003 항목 1)**: (a) `space_key` 합성 확정(ADR 0002 `space:`
   prefix). `_synthesize_acl` 합성 유지, rag `build_acl_filter` 가 검색 seam. (b) content restrictions
   도입은 보류(명세 외, 별도 ADR). **RAG 레포 공유 계약 — `docs/adr/0003-ingestion-rag-shared-contracts.md` 참조.**
-- [ ] **`access_token`/`cloudId` 전달 경로** — Authorization Server→BFF→Ingestion 전달 방식 확정(요구사항 §2-2).
+- [ ] **credential 전달 경로 (api-spec v2.5.0)** — preferred: Worker 가 `adminUserId` 로 auth-server
+  내부 credential API 조회(BFF/RabbitMQ payload 에 credential 미포함). `accessToken`/`cloudId` 직접
+  전달은 legacy PoC 호환만(요구사항 §2-2).
 - [ ] **RabbitMQ / MongoDB 로컬 기동**(docker compose) — 통합 테스트 전.
 
 #### 테스트 방법 (외부 의존성 mock/fake)

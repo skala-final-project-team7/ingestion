@@ -469,3 +469,41 @@ Python 3.10 + qdrant/fastapi 미설치). 신규/확장 테스트: `test_soft_del
 **검증**: repo 전체 `ruff check .` + format + py_compile 통과. 실 `IngestRequest` 격리 exec 로
 명세 페이로드(`mode`/`accessToken`/`cloudId`) 검증 + spaceKey 부재·빈 본문·bad mode 422 확인.
 `CrawlRequest()` 기본 `space_key=""`(전체) 확인. 전체 pytest·`./scripts/verify.sh` 는 Mac/3.11.
+
+## 2026-06-09 — api-spec v2.5.0 정합: 수집 완료 이벤트(RabbitMQ completion event)
+
+ai-agent 담당자의 최신 작업(api-spec v2.5.0)을 본 레포에 반영했다. Admin Key 말소 트리거를 BFF
+polling watcher / ML→BFF HTTP callback 에서 **RabbitMQ completion event** 로 전환한다. ML/Data
+Ingestion 은 credential 없는 completion event 만 발행하고, BFF consumer 가 이를 consume 해
+auth-server deactivate 내부 API 를 호출한다(ML 은 Admin Key 를 직접 말소하지 않음 — 책임 분리).
+본 레포는 admin_key_revoke(HTTP callback) 단계를 거치지 않았으므로, **추가 전용(additive)** 으로
+completion event seam 만 도입한다(제거 대상 없음).
+
+**변경**
+
+- `app/api/ingest_completion.py` (신규) — `IngestCompletionEvent`(payload: `jobId`/`adminUserId`/
+  `mode`/`status`/`completedAt`/`errorCode`/`message`) + publisher seam(`IngestCompletionPublisher`
+  Protocol / `NoopIngestCompletionPublisher` / `QueueIngestCompletionPublisher`) +
+  `publish_ingest_completion_safely`(발행 실패 격리). payload 에 `accessToken`/`refreshToken`/
+  `cloudId` credential set 은 의도적으로 제외(루트 CLAUDE.md 보안 규칙).
+- `app/api/routes.py` — `IngestRequest` 에 `adminUserId`(preferred 식별자) 추가, `accessToken`/
+  `cloudId` 는 legacy PoC 호환 필드로 description 정정. `_run_ingest_job` 이 `mode` 를 받아
+  terminal(COMPLETED/FAILED) 직후 `_publish_ingest_completion` 으로 completion event 발행.
+  `ingest_route` 가 `adminUserId` 를 `CrawlRequest` 로 전달.
+- `app/api/deps.py` — `IngestDeps.completion_publisher`(기본 None / 운영 wiring 전 Noop) 추가,
+  `build_ingest_deps` 가 `NoopIngestCompletionPublisher()` 주입.
+- `app/config.py` — `ingest_completion_routing_key="ingestion.completed"` 추가(credential 미포함
+  payload 계약).
+- `app/ingestion/crawler.py`·`app/ingestion/sync.py` — `CrawlRequest`/`DeltaSyncRequest` 에
+  `admin_user_id`(credential 아님) 추가.
+- 테스트 — `tests/api/test_ingest_completion.py`(신규: payload credential 미포함 + 라우팅 키 +
+  Noop/실패 격리), `tests/api/test_ingest_route.py`(완료/실패 시 completion event 발행 + credential
+  미포함 + publisher 미주입 회귀).
+
+**남은 운영 wiring(후속)**: `QueueIngestCompletionPublisher` 를 실 RabbitMQ connection/channel 에
+연결하는 worker/infra 진입점, Data Ingestion Worker 의 `adminUserId` → auth-server 내부 credential
+조회 client, BFF completion event consumer 의 idempotency/retry/DLQ 정책(featureI-7c 인프라 의존).
+
+**검증**: 변경 8파일 `ruff format`/`ruff check`(All checks passed) + `mypy --python-version 3.11`
+(no issues) + py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11 환경에서 수행한다
+(샌드박스 Linux 에 3.11 인터프리터 부재).

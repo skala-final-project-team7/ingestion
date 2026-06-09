@@ -4,6 +4,12 @@
 - 날짜: 2026-05-17
 - 작성자: 최태성
 
+> **갱신 노트 (api-spec v2.4/v2.5, 2026-06-09)**: 운영 ACL 모델은 page-level read restriction
+> 기반 `allowed_groups`/`allowed_users` 적재 + 빈 권한 시 `allow_authenticated` 공개 sentinel
+> `"*"`(`RAG_ATLASSIAN_PUBLIC_ACL_GROUP`)로 진화했다(`docs/api-spec.md` §1-4/§2-2). 본 ADR의
+> `space:{key}` prefix 합성은 **PoC fixture/Admin Key 미사용(`RAG_ATLASSIAN_USE_ADMIN_KEY=false`)
+> 시 fallback**으로 유지되며, 합성 그룹에 대한 prefix 규약 자체는 그대로 유효하다.
+
 ## 배경
 
 `JsonFixtureSourceAdapter._synthesize_acl`(`app/adapters/json_fixture.py`)은 샘플 데이터에

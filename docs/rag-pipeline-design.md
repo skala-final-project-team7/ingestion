@@ -100,10 +100,12 @@ PoC 어댑터 (본 저장소 구현 대상):
 > `allowed_groups`·`allowed_users`가 모두 비면 '공개 문서'가 아닌 **ACL 누락 오류**로 간주,
 > `INVALID_ACL`로 색인 스킵(보안 안전 측 정책). 첨부는 부모 페이지 ACL 상속.
 
-> **⚠ ACL 미해결 사항** — 설계서는 ACL을 청크별 `allowed_groups`/`allowed_users` Payload로
-> 정의하지만, 제공된 Atlassian API 명세에는 페이지 단위 권한 API가 없고 Space 단위 권한(`DATA-03`)만
-> 있다. 샘플 데이터에도 ACL 필드가 없다. PoC ACL을 `space_key` 기반으로 할지, content restrictions
-> API를 추가 도입할지 **팀 결정 필요**. 상세: `docs/atlassian-api.md`, `docs/db-schema.md`.
+> **✅ ACL 결정 완료 (api-spec v2.4/v2.5)** — 운영 ACL은 청크별 `allowed_groups`/`allowed_users`
+> Payload로 적재하며, page-level **read restriction API**(`/rest/api/content/{id}/restriction/
+> byOperation/read`, Admin Key 헤더로 조회)에서 산출한다. 빈 권한은 `allow_authenticated` 정책의
+> 공개 sentinel `"*"`로 적재한다. PoC fixture/Admin Key 미사용 경로는 `space:{key}` 합성을
+> fallback으로 유지(ADR 0002). 상세: `docs/api-spec.md` §1-4/§2-2, `docs/atlassian-api.md`,
+> `docs/db-schema.md`.
 
 ### 7.2 Chunk 메타데이터
 

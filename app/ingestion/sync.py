@@ -132,7 +132,9 @@ class DeltaSyncRequest:
 
     previous_snapshot_path: str
     space_key: str | None = None
-    # PoC: BFF→Ingestion 전달(미확정 TBD). 로그·메시지 페이로드에 남기지 않는다.
+    # api-spec v2.5.0 preferred credential lookup key (Data Ingestion Worker → auth-server).
+    admin_user_id: str | None = None
+    # Legacy PoC: BFF→Ingestion 직접 전달(미확정 TBD). 로그·메시지 페이로드에 남기지 않는다.
     access_token: str | None = None
     cloud_id: str | None = None
 

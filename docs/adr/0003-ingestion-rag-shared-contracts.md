@@ -6,6 +6,13 @@
 - 적용 범위: `ingestion` 레포(Data Ingestion Pipeline)와 `rag` 레포(RAG Pipeline) **양쪽 동일 기록**.
   본 ADR은 두 레포 `docs/adr/0003-*.md`에 동일 내용으로 복제한다.
 
+> **갱신 노트 (api-spec v2.4/v2.5, 2026-06-09)**: 공유 ACL 계약은 page-level read restriction
+> 기반 `allowed_groups`/`allowed_users` + 빈 권한 시 `allow_authenticated` 공개 sentinel `"*"`
+> (rag `build_acl_filter`가 모든 principal 에 `"*"` 주입)로 확정되었다(`docs/api-spec.md`
+> §1-4/§2-2). `space_key` 는 payload 식별/표시 필드로 유지되고, `space:{key}` ACL 합성은 PoC
+> fixture/Admin Key 미사용 시 fallback 이다. Admin Key 말소는 v2.5에서 RabbitMQ completion
+> event(ML 발행 → BFF consumer → auth-server deactivate)로 확정.
+
 ## 배경
 
 `ingestion`의 `app/schemas`, `app/ingestion/{chunker,embedder,embedding,vector_store,indexer}`,

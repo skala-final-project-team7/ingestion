@@ -13,6 +13,8 @@
   - 2026-05-18, build_real_deps 후속 — use_real_adapters 토글 추가
     (RAG_USE_REAL_ADAPTERS). 기본값 False(PoC). True 시 lifespan이 build_real_deps
     분기로 E5 + BM25 + Qdrant from_settings + CrossEncoderRerankerImpl을 부트스트랩
+  - 2026-06-09, api-spec v2.5.0 정합 — ingest_completion_routing_key 추가(수집 완료 이벤트
+    RabbitMQ 라우팅 키). credential 미포함 payload 계약.
   - 2026-05-19, feature12 — cross_encoder_model 기본값에 ``-v2`` 추가.
     Hugging Face / sentence-transformers 의 실 모델명은 ``cross-encoder/ms-marco-
     MiniLM-L-12-v2`` 이며 ``-v2`` 가 없는 변형은 존재하지 않는다 (설계서
@@ -88,6 +90,14 @@ class Settings(BaseSettings):
     # NOTE(P2): 운영 전환 시 비밀번호 포함 DSN이 들어오면 SecretStr로 승급해야 한다.
     # PoC는 localhost·비밀번호 없는 DSN만 사용하므로 평문 문자열을 유지한다.
     mysql_uri: str = "mysql+pymysql://localhost:3306/lina_rag"
+
+    # --- 수집 완료 이벤트 (api-spec v2.5.0) ---
+    # 수집 잡이 terminal(COMPLETED/FAILED) 상태에 도달하면 ML/Data Ingestion 이 RabbitMQ
+    # completion event 를 발행한다. BFF consumer 가 이를 consume 해 auth-server 의 Admin Key
+    # deactivate 내부 API 를 호출한다(ML 은 Admin Key 를 직접 말소하지 않음 — 책임 분리).
+    # payload 에는 jobId/adminUserId/mode/status 만 담고 accessToken/refreshToken/cloudId 같은
+    # credential set 은 절대 포함하지 않는다(루트 CLAUDE.md 보안 규칙).
+    ingest_completion_routing_key: str = "ingestion.completed"
 
     # --- OpenAI ---
     openai_api_key: SecretStr = SecretStr("")

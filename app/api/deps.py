@@ -11,6 +11,9 @@
   - 2026-05-29, 최초 작성 — build_ingest_deps (job_store + run_crawl). run_crawl 은
     ``run_poc_ingestion`` 으로 crawl→chunk→upsert 를 in-process 합성 실행한다(PoC 전부 fake
     스토어 격리). 운영 분산 모드(RabbitMQ 워커 발행)는 후속 확장 지점.
+  - 2026-06-09, api-spec v2.5.0 정합 — IngestDeps 에 ``completion_publisher`` 추가. 기본값은
+    local/PoC 안전성을 위해 ``NoopIngestCompletionPublisher`` 이며, 운영 RabbitMQ 발행 wiring 은
+    infra/worker 진입점에서 주입한다.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -24,6 +27,7 @@ from dataclasses import dataclass
 
 from app.adapters.base import DocumentSourceAdapter
 from app.adapters.factory import build_source_adapter
+from app.api.ingest_completion import IngestCompletionPublisher, NoopIngestCompletionPublisher
 from app.config import Settings
 from app.ingestion.bootstrap import build_soft_delete_store
 from app.ingestion.crawler import CrawlRequest, CrawlResult
@@ -42,6 +46,10 @@ class IngestDeps:
     job_store: IngestJobStore
     run_crawl: CrawlRunner
     sync_worker: SyncWorker
+    # api-spec v2.5.0 — 수집 terminal 상태에서 발행할 completion event publisher.
+    # 기본값 None(또는 Noop)이면 발행하지 않는다(local/PoC 안전). 운영 RabbitMQ wiring 은
+    # infra/worker 진입점에서 주입한다.
+    completion_publisher: IngestCompletionPublisher | None = None
 
 
 def build_ingest_deps(settings: Settings) -> IngestDeps:
@@ -76,4 +84,6 @@ def build_ingest_deps(settings: Settings) -> IngestDeps:
         job_store=InMemoryIngestJobStore(),
         run_crawl=_run_crawl,
         sync_worker=sync_worker,
+        # local/PoC 안전 기본값 — 운영 RabbitMQ 발행 wiring 은 worker/infra 진입점에서 주입한다.
+        completion_publisher=NoopIngestCompletionPublisher(),
     )

@@ -4,6 +4,8 @@
 - POST /ml/ingest → jobId 발급 + status=STARTED + startedAt(KST), 백그라운드 크롤 후 COMPLETED.
 - GET /ml/ingest/status/{jobId} → jobId/status/totalPages/processedPages/failedPages/startedAt.
 - GET /ml/ingest/health → {"status": "UP"}.
+- (v2.5.0) terminal(COMPLETED/FAILED) 상태에서 credential 없는 RabbitMQ completion event 발행
+  + adminUserId 식별자.
 
 크롤 러너는 stub 으로 주입해(외부 컨테이너·샘플 파일 의존 없이) 잡 카운트 집계만 결정론적으로
 검증한다. ASGITransport 는 응답 완료 전에 BackgroundTasks 를 끝내므로 POST 직후 상태 조회 시
@@ -17,18 +19,30 @@ import pytest
 from httpx import ASGITransport
 
 from app.api.deps import IngestDeps
+from app.api.ingest_completion import IngestCompletionPublisher, QueueIngestCompletionPublisher
 from app.api.main import create_app
 from app.api.routes import get_deps
 from app.ingestion.crawler import CrawlRequest, CrawlResult
+from app.ingestion.workers.publisher import FakeQueuePublisher
 from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps
 from app.storage.ingest_jobs import InMemoryIngestJobStore
 from app.storage.qdrant_fake import FakeQdrantPoolStore
 
 
-def _stub_deps() -> IngestDeps:
-    """stub 크롤 러너(3 성공 + 1 실패)를 가진 IngestDeps — 카운트 집계 결정론."""
+def _stub_deps(
+    *,
+    completion_publisher: IngestCompletionPublisher | None = None,
+    fail: bool = False,
+) -> IngestDeps:
+    """stub 크롤 러너(3 성공 + 1 실패)를 가진 IngestDeps — 카운트 집계 결정론.
+
+    ``completion_publisher`` 를 주입하면 terminal 상태 completion event 발행을 검증할 수 있고,
+    ``fail=True`` 면 크롤이 예외를 던져 FAILED 경로를 재현한다.
+    """
 
     def _run_crawl(request: CrawlRequest) -> CrawlResult:
+        if fail:
+            raise RuntimeError("crawl boom")
         return CrawlResult(
             space_key=request.space_key,
             pages_collected=3,
@@ -39,6 +53,7 @@ def _stub_deps() -> IngestDeps:
         job_store=InMemoryIngestJobStore(),
         run_crawl=_run_crawl,
         sync_worker=SyncWorker(SyncWorkerDeps(store=FakeQdrantPoolStore())),
+        completion_publisher=completion_publisher,
     )
 
 
@@ -115,3 +130,67 @@ async def test_ingest_accepts_empty_body_no_space_key() -> None:
         resp = await client.post("/ml/ingest", json={})
     assert resp.status_code == 200
     assert resp.json()["status"] == "STARTED"
+
+
+@pytest.mark.asyncio
+async def test_ingest_completed_publishes_completion_event_without_credentials() -> None:
+    """api-spec v2.5.0 — 완료 시 completion event 발행(credential 미포함 + adminUserId 식별자)."""
+    queue = FakeQueuePublisher()
+    deps = _stub_deps(completion_publisher=QueueIngestCompletionPublisher(queue))
+    async with _client(deps) as client:
+        resp = await client.post(
+            "/ml/ingest",
+            json={
+                "mode": "full",
+                "adminUserId": "712020:admin",
+                "accessToken": "secret-token",
+                "cloudId": "cid-123",
+            },
+        )
+        assert resp.status_code == 200
+
+    assert len(queue.messages) == 1
+    msg = queue.messages[0]
+    assert msg.routing_key == "ingestion.completed"
+    assert msg.body["jobId"].startswith("job-")
+    assert msg.body["mode"] == "full"
+    assert msg.body["status"] == "COMPLETED"
+    assert msg.body["adminUserId"] == "712020:admin"
+    # 보안 — credential set 은 절대 completion event payload 에 싣지 않는다(루트 CLAUDE.md).
+    assert "accessToken" not in msg.body
+    assert "refreshToken" not in msg.body
+    assert "cloudId" not in msg.body
+
+
+@pytest.mark.asyncio
+async def test_ingest_failure_publishes_failed_completion_event() -> None:
+    """크롤 실패 시 status=FAILED + errorCode=INGEST_FAILED completion event(credential 미포함)."""
+    queue = FakeQueuePublisher()
+    deps = _stub_deps(completion_publisher=QueueIngestCompletionPublisher(queue), fail=True)
+    async with _client(deps) as client:
+        resp = await client.post(
+            "/ml/ingest",
+            json={"mode": "delta", "adminUserId": "712020:admin", "cloudId": "cid-123"},
+        )
+        assert resp.status_code == 200
+        job_id = resp.json()["jobId"]
+        status_resp = await client.get(f"/ml/ingest/status/{job_id}")
+
+    assert status_resp.json()["status"] == "FAILED"
+    assert len(queue.messages) == 1
+    msg = queue.messages[0]
+    assert msg.body["mode"] == "delta"
+    assert msg.body["status"] == "FAILED"
+    assert msg.body["errorCode"] == "INGEST_FAILED"
+    assert "cloudId" not in msg.body
+
+
+@pytest.mark.asyncio
+async def test_ingest_without_publisher_still_completes() -> None:
+    """completion_publisher 미주입(기본 None)이어도 잡은 정상 COMPLETED 된다(발행 no-op)."""
+    deps = _stub_deps()  # completion_publisher=None
+    async with _client(deps) as client:
+        resp = await client.post("/ml/ingest", json={"mode": "full"})
+        job_id = resp.json()["jobId"]
+        status_resp = await client.get(f"/ml/ingest/status/{job_id}")
+    assert status_resp.json()["status"] == "COMPLETED"
