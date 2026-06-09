@@ -533,3 +533,29 @@ completion event seam 만 도입한다(제거 대상 없음).
 
 **검증**: 변경 4파일 `ruff format`/`ruff check`(All checks passed) + `mypy app`(59 files, no issues)
 + py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11(샌드박스 3.11 부재).
+
+## 2026-06-09 — FR-005 delta 삭제 후보 soft-delete 적용 (확인 게이트)
+
+delta 잡이 산출한 삭제 후보(`deleted_candidate_page_ids`)를 `SyncWorker.apply_delta_deletions` 로
+실제 soft-delete 적용하도록 배선했다. **확인 게이트 보존**: 설정 `data_sync_delta_delete_confirm`
+(기본 False)이 OFF면 후보만 surface(자동 삭제 안 함 — sync false-positive 로 유효 문서 삭제 방지),
+True면 적용한다.
+
+**변경**
+
+- `app/config.py` — `data_sync_delta_delete_confirm: bool = False`(opt-in 게이트).
+- `app/api/deps.py` — `IngestDeps.delta_delete_confirm` 추가, `build_ingest_deps` 가 설정에서 주입.
+- `app/api/routes.py` — `_run_delta_ingest_job` 가 run_delta 성공 후
+  `deps.sync_worker.apply_delta_deletions(result, confirm=deps.delta_delete_confirm)` 호출. 결과는
+  로깅(부분 실패 warning). soft-delete 실패는 id 단위로 격리돼 수집 잡을 FAILED 로 만들지 않는다
+  (best-effort). status/응답/completion event 계약 무변경.
+- `tests/api/test_ingest_route.py` — 통합 회귀 2건(confirm=True→후보 soft-delete / confirm=False→미적용).
+
+**PoC 한계**: `build_soft_delete_store` 가 ingest 합성 파이프라인 store 와 분리돼, PoC 데모에선 실
+색인 데이터에 반영이 안 될 수 있다(운영 실 Qdrant 에선 동일 store). 단위/통합 테스트는 store 를 직접
+주입해 적용을 검증한다.
+
+**범위 밖**: Trash/Webhook 주기 실행 스케줄러(featureI-7c).
+
+**검증**: 변경 4파일 `ruff format`/`ruff check`(All checks passed) + `mypy app`(59 files, no issues)
++ py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11(샌드박스 3.11 부재).

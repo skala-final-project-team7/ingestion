@@ -176,8 +176,9 @@ def _run_delta_ingest_job(deps: IngestDeps, job_id: str, delta_request: DeltaSyn
     ``deps.run_delta`` 로 변경분을 수집(vendored Data Sync Agent 래퍼)하고, ``DeltaSyncResult``
     집계로 카운트를 채워 ``COMPLETED`` 로, 예외 시 ``FAILED`` 로 마감한다(예외는 잡 단위 격리).
     상태 카운트는 processed=changed_pages / failed=failed_items / total=합 으로 매핑한다.
-    삭제 후보(deleted_candidate_page_ids) soft-delete 적용은 SyncWorker/스케줄러 책임이라
-    본 잡은 카운트만 보고한다. terminal 에서 completion event(mode="delta")를 발행한다.
+    삭제 후보(deleted_candidate_page_ids)는 확인 게이트(``deps.delta_delete_confirm``)가 켜진
+    경우만 ``SyncWorker.apply_delta_deletions`` 로 soft-delete 한다(기본 OFF=surface만). terminal
+    에서 completion event(mode="delta")를 발행한다.
     """
     deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
     try:
@@ -203,6 +204,25 @@ def _run_delta_ingest_job(deps: IngestDeps, job_id: str, delta_request: DeltaSyn
         )
         return
     finished_at = datetime.now(UTC)
+    # 삭제 후보 soft-delete 적용(확인 게이트). 기본 confirm=False 면 no-op(후보 surface만).
+    # apply_delta_deletions/apply_soft_deletes 는 id 단위로 실패를 격리하므로 예외를 전파하지
+    # 않는다 — soft-delete 실패가 수집 잡을 FAILED 로 만들지 않는다(best-effort side-effect).
+    delete_result = deps.sync_worker.apply_delta_deletions(
+        result, confirm=deps.delta_delete_confirm
+    )
+    if delete_result.has_failures:
+        _LOGGER.warning(
+            "delta soft-delete partial failure: job_id=%s deleted=%d failed_pages=%d",
+            job_id,
+            delete_result.total_soft_deleted,
+            len(delete_result.failed_page_ids),
+        )
+    elif delete_result.total_soft_deleted:
+        _LOGGER.info(
+            "delta soft-delete applied: job_id=%s deleted=%d",
+            job_id,
+            delete_result.total_soft_deleted,
+        )
     deps.job_store.update(
         job_id,
         status=IngestJobStatus.COMPLETED,

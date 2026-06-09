@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     # 사용하는 이전 스냅샷 파일 경로. 운영에서는 raw store/스냅샷 repository 로 교체될 수 있으나
     # 현재 vendored 계약은 파일 경로를 요구한다.
     data_sync_previous_snapshot: str = "data/snapshots/latest_snapshot.json"
+    # delta 삭제 후보(deleted_candidate_page_ids) 자동 soft-delete 게이트(확인 게이트 보존).
+    # 기본 False = 후보를 surface 만(자동 삭제 안 함 — sync false-positive 로 유효 문서 삭제 방지).
+    # True = /ml/ingest delta 잡이 후보를 SyncWorker.apply_delta_deletions(confirm=True)로 적용.
+    data_sync_delta_delete_confirm: bool = False
 
     # --- OpenAI ---
     openai_api_key: SecretStr = SecretStr("")

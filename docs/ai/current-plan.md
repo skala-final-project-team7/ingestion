@@ -13,7 +13,8 @@
 > - **항목 3 `IngestionStage.CRAWL`**: **적용됨**. enum 추가 + `crawler.run_full_crawl(jobs=...)` +
 >   `pipeline` 에서 crawl·worker 가 jobs 공유 → crawl 단계 `ingestion_jobs` 기록 가능(더 이상 보류 아님).
 > - **항목 4 soft_delete**: **능력 도입됨**(payload `is_deleted`, 검색 `must_not` 제외, store
->   `soft_delete_by_*`). 삭제 트리거(Delta Sync/Trash/Webhook → `soft_delete_by_*`) 실배선만 운영 후속.
+>   `soft_delete_by_*`). Delta 삭제 트리거는 `/ml/ingest` delta 잡에 **배선됨**(확인 게이트
+>   `data_sync_delta_delete_confirm`, 기본 OFF). Trash/Webhook 의 주기 실행 loop 만 운영 후속.
 > - **합의 불필요**: `access_token`/`cloud_id` 전달(Auth/BFF 소관) — 두 레포 간 결정 대상 아님.
 > - **남은 운영 wiring(인프라/미존재 컴포넌트 의존)**: featureI-7c(RabbitMQ consumer loop·실 crawl jobs
 >   주입), soft_delete 삭제 트리거 실배선.

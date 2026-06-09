@@ -17,6 +17,8 @@
   - 2026-06-09, FR-005 delta 라우팅 — IngestDeps 에 ``run_delta``/``previous_snapshot_path`` 추가.
     기본값은 PoC 안전(변경분 없음)이며, 운영 delta(``run_delta_sync`` 실 client/snapshot)는
     infra/worker 진입점에서 주입한다.
+  - 2026-06-09, FR-005 delta 삭제 적용 — IngestDeps 에 ``delta_delete_confirm`` 추가(기본 False=
+    후보 surface만; True 시 delta 잡이 apply_delta_deletions(confirm=True)로 soft-delete).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -70,6 +72,9 @@ class IngestDeps:
     # 없음)이며, 운영 delta 는 infra/worker 진입점에서 run_delta_sync 로 교체 주입한다.
     run_delta: DeltaRunner = _poc_empty_delta
     previous_snapshot_path: str = ""
+    # FR-005 — delta 삭제 후보 자동 soft-delete 확인 게이트. 기본 False(후보 surface만);
+    # True 시 delta 잡이 apply_delta_deletions(confirm=True)로 soft-delete 한다.
+    delta_delete_confirm: bool = False
 
 
 def build_ingest_deps(settings: Settings) -> IngestDeps:
@@ -109,4 +114,5 @@ def build_ingest_deps(settings: Settings) -> IngestDeps:
         # FR-005 — delta 러너는 PoC 안전 기본값(변경분 없음). 운영 delta 는 infra 진입점에서
         # ``run_delta_sync``(실 client/snapshot)로 교체한다. 스냅샷 경로만 설정에서 주입.
         previous_snapshot_path=settings.data_sync_previous_snapshot,
+        delta_delete_confirm=settings.data_sync_delta_delete_confirm,
     )

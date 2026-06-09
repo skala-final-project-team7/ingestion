@@ -31,17 +31,34 @@ from app.storage.ingest_jobs import InMemoryIngestJobStore
 from app.storage.qdrant_fake import FakeQdrantPoolStore
 
 
+class _RecordingSoftDeleteStore:
+    """soft-delete 호출만 기록하는 최소 store(SoftDeleteStore Protocol 충족) — 적용 검증용."""
+
+    def __init__(self) -> None:
+        self.deleted_pages: list[str] = []
+        self.deleted_attachments: list[str] = []
+
+    def soft_delete_by_page_id(self, page_id: str) -> None:
+        self.deleted_pages.append(page_id)
+
+    def soft_delete_by_attachment_id(self, attachment_id: str) -> None:
+        self.deleted_attachments.append(attachment_id)
+
+
 def _stub_deps(
     *,
     completion_publisher: IngestCompletionPublisher | None = None,
     fail: bool = False,
     run_delta: DeltaRunner | None = None,
+    sync_worker: SyncWorker | None = None,
+    delta_delete_confirm: bool = False,
 ) -> IngestDeps:
     """stub 크롤/델타 러너를 가진 IngestDeps — 카운트 집계 결정론.
 
     - 크롤 stub: 3 성공 + 1 실패. ``fail=True`` 면 크롤이 예외를 던진다(full FAILED 경로, 또는
       delta 분기가 크롤을 호출하지 않음을 보장).
     - ``run_delta`` 미지정 시 IngestDeps 기본 PoC(변경분 없음) 러너; 지정 시 delta 분기 검증에 사용.
+    - ``sync_worker``/``delta_delete_confirm`` 으로 delta 삭제 후보 soft-delete 적용을 검증한다.
     - ``completion_publisher`` 주입 시 terminal completion event 발행을 검증할 수 있다.
     """
 
@@ -60,8 +77,9 @@ def _stub_deps(
     return IngestDeps(
         job_store=InMemoryIngestJobStore(),
         run_crawl=_run_crawl,
-        sync_worker=SyncWorker(SyncWorkerDeps(store=FakeQdrantPoolStore())),
+        sync_worker=sync_worker or SyncWorker(SyncWorkerDeps(store=FakeQdrantPoolStore())),
         completion_publisher=completion_publisher,
+        delta_delete_confirm=delta_delete_confirm,
         **delta_kwargs,
     )
 
@@ -270,3 +288,51 @@ async def test_ingest_delta_failure_publishes_failed_completion_event() -> None:
     assert msg.body["mode"] == "delta"
     assert msg.body["status"] == "FAILED"
     assert msg.body["errorCode"] == "INGEST_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_ingest_delta_applies_soft_delete_when_confirmed() -> None:
+    """FR-005 — delta_delete_confirm=True 면 삭제 후보를 apply_delta_deletions 로 soft-delete."""
+    store = _RecordingSoftDeleteStore()
+
+    def _run_delta(request: DeltaSyncRequest) -> DeltaSyncResult:
+        return DeltaSyncResult(
+            changed_pages=1,
+            deleted_candidate_page_ids=["P2", "P9"],
+            failed_items=0,
+        )
+
+    deps = _stub_deps(
+        run_delta=_run_delta,
+        sync_worker=SyncWorker(SyncWorkerDeps(store=store)),
+        delta_delete_confirm=True,
+    )
+    async with _client(deps) as client:
+        resp = await client.post(
+            "/ml/ingest", json={"mode": "delta", "adminUserId": "712020:admin"}
+        )
+        job_id = resp.json()["jobId"]
+        status_resp = await client.get(f"/ml/ingest/status/{job_id}")
+
+    assert status_resp.json()["status"] == "COMPLETED"
+    assert store.deleted_pages == ["P2", "P9"]  # apply_soft_deletes 정규화(정렬·dedup)
+
+
+@pytest.mark.asyncio
+async def test_ingest_delta_does_not_soft_delete_when_not_confirmed() -> None:
+    """기본(confirm=False)은 삭제 후보를 적용하지 않는다(surface-only 정책 보존)."""
+    store = _RecordingSoftDeleteStore()
+
+    def _run_delta(request: DeltaSyncRequest) -> DeltaSyncResult:
+        return DeltaSyncResult(changed_pages=1, deleted_candidate_page_ids=["P2"], failed_items=0)
+
+    deps = _stub_deps(run_delta=_run_delta, sync_worker=SyncWorker(SyncWorkerDeps(store=store)))
+    async with _client(deps) as client:
+        resp = await client.post(
+            "/ml/ingest", json={"mode": "delta", "adminUserId": "712020:admin"}
+        )
+        job_id = resp.json()["jobId"]
+        status_resp = await client.get(f"/ml/ingest/status/{job_id}")
+
+    assert status_resp.json()["status"] == "COMPLETED"
+    assert store.deleted_pages == []  # confirm=False → 미적용
