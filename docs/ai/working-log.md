@@ -585,3 +585,25 @@ True면 적용한다.
 
 **검증**: 변경 4파일 `ruff format`/`ruff check`(All checks passed) + `mypy app`(60 files, no issues)
 + py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11(샌드박스 3.11 부재).
+
+## 2026-06-09 — FR-002 첨부 다운로더 bootstrap 배선
+
+`build_chunking_worker_deps` 실(real) branch 에 `HttpAttachmentDownloader` 를 주입했다. 인증은 기존
+Confluence 클라이언트(`ConfluenceTrashContentClient`·`ConfluenceRestrictionAclProvider`)와 동일
+패턴(settings `Bearer access_token` + 선택 `Atl-Confluence-With-Admin-Key` header)을 따른다(추측 아님).
+
+**변경**
+
+- `app/ingestion/bootstrap.py` — `build_attachment_downloader(settings)` 추가(source_type=="atlassian"
+  이면 authed httpx client 로 `HttpAttachmentDownloader`, 아니면 None). `build_chunking_worker_deps`
+  실 branch 에 `attachment_downloader=build_attachment_downloader(resolved)` 배선.
+- `tests/ingestion/test_bootstrap_attachment_downloader.py`(신규) — fixture→None / atlassian→
+  HttpAttachmentDownloader(download_dir) 단위 회귀.
+
+**범위 밖(후속)**: 실 atlassian 어댑터의 첨부 메타(download_url) 수집(vendored 경계) — 이게 돼야
+라이브 end-to-end 동작. credential SOURCE 는 현 settings 패턴을 따르며, v2.5 `adminUserId`→
+auth-server 조회로의 이전은 모든 Confluence client 공통 후속이다. 실 branch 전체 빌드는 E5/Qdrant
+로딩이 필요해 샌드박스 비검증(헬퍼 단위로 wiring 핵심 커버).
+
+**검증**: 변경 2파일 `ruff format`/`ruff check`(All passed) + `mypy app`(60 files, no issues) +
+py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11.

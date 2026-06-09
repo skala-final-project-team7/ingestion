@@ -12,6 +12,8 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-26, 최초 작성, featureI-7b — build_raw_page_store / build_document_analyzer /
     build_chunking_worker_deps (PoC vs real).
+  - 2026-06-09, FR-002 — build_attachment_downloader 추가(atlassian 소스 시 HttpAttachmentDownloader
+    주입; fixture 는 None). build_chunking_worker_deps 실 branch 에 배선.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -33,6 +35,7 @@ from app.storage.qdrant_fake import FakeQdrantPoolStore
 from app.storage.raw_store import FakeRawPageStore, RawPageStore
 
 if TYPE_CHECKING:
+    from app.ingestion.attachment_downloader import AttachmentDownloader
     from app.ingestion.document_analyzer import DocumentAnalyzer
     from app.ingestion.soft_delete import SoftDeleteStore
 
@@ -111,6 +114,32 @@ def build_chunking_worker_deps(
         cache=MongoEmbeddingCache.from_settings(resolved),
         jobs=MongoIngestionJobsRepository.from_settings(resolved),
         doc_type_resolver=build_document_analyzer(resolved),
+        attachment_downloader=build_attachment_downloader(resolved),
+    )
+
+
+def build_attachment_downloader(settings: Settings | None = None) -> AttachmentDownloader | None:
+    """첨부 다운로더를 조립한다 — atlassian 소스면 HttpAttachmentDownloader, 아니면 None.
+
+    fixture 소스(json_fixture)는 ``local_path`` 를 이미 채우므로 다운로더가 불필요(None).
+    atlassian 소스는 download_url 만 제공하므로, 기존 Confluence 클라이언트와 동일한 인증 헤더
+    (Bearer access_token + 선택 Admin Key)를 구성한 httpx client 로 HttpAttachmentDownloader 를
+    만든다. credential SOURCE 는 현 codebase 패턴(settings)을 따른다 — v2.5 adminUserId →
+    auth-server 조회로의 이전은 모든 Confluence client 공통 후속이다.
+    """
+    resolved = settings or get_settings()
+    if resolved.source_type != "atlassian":
+        return None
+    import httpx
+
+    from app.ingestion.attachment_downloader import HttpAttachmentDownloader
+
+    headers = {"Authorization": f"Bearer {resolved.atlassian_access_token.get_secret_value()}"}
+    if resolved.atlassian_use_admin_key:
+        headers["Atl-Confluence-With-Admin-Key"] = "true"
+    return HttpAttachmentDownloader(
+        download_dir=resolved.attachment_download_dir,
+        client=httpx.Client(headers=headers),
     )
 
 

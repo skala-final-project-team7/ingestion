@@ -50,7 +50,7 @@
 | Data Ingestion Agent (Full Crawl) | FR-001 | `data_ingestion_agent/`(vendored) ↔ `app/adapters/atlassian.py` + `app/ingestion/crawler.py` | 통합 완료(featureI-6) |
 | Data Sync Agent (Delta/삭제) | FR-005 | `data_sync_agent/`(vendored) ↔ `app/ingestion/sync.py`(`run_delta_sync`) ↔ `app/api/routes.py`(`/ml/ingest` mode=delta) | 통합 완료(featureI-6) + HTTP delta 라우팅 배선 / Reconciliation 복사 유지 |
 | Sync Worker (soft-delete 트리거) | FR-005 | `app/ingestion/workers/sync_worker.py` + `app/ingestion/soft_delete.py` + `app/adapters/confluence_trash.py` + `POST /ml/confluence/webhook` | featureI-5b — Delta 확인 게이트·Trash API·Webhook → `apply_soft_deletes`(`is_deleted`). 주기 구동·실행 loop 는 featureI-7c |
-| 첨부 텍스트 추출기·다운로더 | FR-002 | `app/ingestion/extractor/` + `app/ingestion/attachment_downloader.py` | 추출기 코어(featureI-3) + 다운로더(`Noop`/`Http`, download_url→local_path) 배선. 텍스트는 `raw_attachments.extracted_text` 에 보존(별도 attachment_texts 미사용 — db-schema §2.7). **실 어댑터 첨부 메타(download_url) 수집은 후속** |
+| 첨부 텍스트 추출기·다운로더 | FR-002 | `app/ingestion/extractor/` + `app/ingestion/attachment_downloader.py` | 추출기 코어(featureI-3) + 다운로더(`Noop`/`Http`, download_url→local_path) 배선 + bootstrap 실 branch 주입(`build_attachment_downloader`). 텍스트는 `raw_attachments.extracted_text` 에 보존(별도 attachment_texts 미사용 — db-schema §2.7). **실 어댑터 첨부 메타(download_url) 수집은 후속** |
 | 문서·첨부 분석기 | FR-003 | `app/ingestion/document_analyzer.py`(신규 [Agent]) · `attachment_analyzer.py`(복사 Pipeline) | 문서 분석기[Agent] 구현(featureI-4b, GPT-4o-mini+캐싱). 첨부 분석기 복사 |
 | Adaptive Chunker | FR-003 | `app/ingestion/chunker/` | 복사 완료 (본문 6유형 + 첨부 3유형) |
 | Dual Embedding | FR-004 | `app/ingestion/embedder/`, `embedding.py` | 복사 완료 |
