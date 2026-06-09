@@ -19,6 +19,8 @@
     completion event 로 전환. ``adminUserId`` 를 preferred job 식별자로 추가하고, terminal
     (COMPLETED/FAILED) 상태에서 credential 없는 completion event 를 발행한다. ``accessToken``/
     ``cloudId`` 직접 전달은 legacy PoC 호환 필드로만 유지한다.
+  - 2026-06-09, FR-005 delta 라우팅 — ``mode=delta`` 를 full-crawl 이 아니라 Delta Sync
+    (``deps.run_delta``)로 분기하고, terminal 상태에서 completion event(mode="delta")를 발행한다.
 --------------------------------------------------
 [보안] 요청 ``accessToken``/``cloudId`` 는 로그·응답 본문·completion event payload 에 남기지
        않는다(루트 CLAUDE.md 보안 규칙). 상태 응답·completion event 에는 토큰 관련 필드를 포함하지
@@ -41,6 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.api.deps import IngestDeps
 from app.api.ingest_completion import IngestCompletionEvent, publish_ingest_completion_safely
 from app.ingestion.crawler import CrawlRequest
+from app.ingestion.sync import DeltaSyncRequest
 from app.schemas.enums import IngestJobStatus
 
 _LOGGER = logging.getLogger(__name__)
@@ -167,6 +170,57 @@ def _run_ingest_job(deps: IngestDeps, job_id: str, mode: str, crawl_request: Cra
     )
 
 
+def _run_delta_ingest_job(deps: IngestDeps, job_id: str, delta_request: DeltaSyncRequest) -> None:
+    """백그라운드 delta 수집 잡 — Delta Sync 실행 후 마감한다 (FR-005).
+
+    ``deps.run_delta`` 로 변경분을 수집(vendored Data Sync Agent 래퍼)하고, ``DeltaSyncResult``
+    집계로 카운트를 채워 ``COMPLETED`` 로, 예외 시 ``FAILED`` 로 마감한다(예외는 잡 단위 격리).
+    상태 카운트는 processed=changed_pages / failed=failed_items / total=합 으로 매핑한다.
+    삭제 후보(deleted_candidate_page_ids) soft-delete 적용은 SyncWorker/스케줄러 책임이라
+    본 잡은 카운트만 보고한다. terminal 에서 completion event(mode="delta")를 발행한다.
+    """
+    deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
+    try:
+        result = deps.run_delta(delta_request)
+    except Exception as exc:  # noqa: BLE001 — delta/외부 호출 예외 광범위 캐치(잡 단위 격리)
+        finished_at = datetime.now(UTC)
+        _LOGGER.exception("delta ingest job failed: job_id=%s", job_id)
+        deps.job_store.update(
+            job_id,
+            status=IngestJobStatus.FAILED,
+            finished_at=finished_at,
+            error=str(exc),
+        )
+        _publish_ingest_completion(
+            deps,
+            job_id=job_id,
+            mode="delta",
+            status=IngestJobStatus.FAILED,
+            admin_user_id=delta_request.admin_user_id,
+            error_code="INGEST_FAILED",
+            error=str(exc),
+            finished_at=finished_at,
+        )
+        return
+    finished_at = datetime.now(UTC)
+    deps.job_store.update(
+        job_id,
+        status=IngestJobStatus.COMPLETED,
+        total_pages=result.changed_pages + result.failed_items,
+        processed_pages=result.changed_pages,
+        failed_pages=result.failed_items,
+        finished_at=finished_at,
+    )
+    _publish_ingest_completion(
+        deps,
+        job_id=job_id,
+        mode="delta",
+        status=IngestJobStatus.COMPLETED,
+        admin_user_id=delta_request.admin_user_id,
+        finished_at=finished_at,
+    )
+
+
 def _publish_ingest_completion(
     deps: IngestDeps,
     *,
@@ -210,20 +264,30 @@ async def ingest_route(
     잡을 ``STARTED`` 로 생성하고 백그라운드 태스크로 crawl→chunk→upsert 를 실행한 뒤,
     즉시 ``jobId`` / ``status`` / ``startedAt``(KST)을 반환한다. 진행 상태는
     ``GET /ml/ingest/status/{jobId}`` 로 조회한다. 스페이스 스코프 파라미터는 없으며(v2.4.0),
-    admin Key 로 접근 가능한 전체 스페이스를 수집한다. terminal(COMPLETED/FAILED) 상태 도달 시
+    ``mode=full``(기본)은 admin Key 로 접근 가능한 전체 스페이스를 수집하고, ``mode=delta``는 직전
+    스냅샷 대비 변경분만 Delta Sync 한다(FR-005). terminal(COMPLETED/FAILED) 상태 도달 시
     credential 없는 completion event 를 발행한다(v2.5.0 — Admin Key 말소 트리거).
     """
     job = deps.job_store.create()
-    # mode 는 검증만 하고(2단계 PoC) full-crawl 합성 파이프라인으로 처리한다. delta sync
-    # 에이전트(data_sync_agent) 배선은 후속 — credential(accessToken/cloudId)은 CrawlRequest 로만
-    # 전달하고 로깅하지 않는다. ``adminUserId``(credential 아님)는 terminal completion event 의
-    # 식별자로 전달한다. space_key 미지정(기본 "") → 전체 스페이스 수집(api-spec v2.4.0 §2-2).
-    crawl_request = CrawlRequest(
-        access_token=payload.access_token,
-        cloud_id=payload.cloud_id,
-        admin_user_id=payload.admin_user_id,
-    )
-    background_tasks.add_task(_run_ingest_job, deps, job.job_id, payload.mode, crawl_request)
+    # mode 분기: ``delta`` 는 Delta Sync(vendored Data Sync Agent 래퍼)로, 그 외(``full``)는
+    # full-crawl 합성으로 처리한다. credential 은 요청 객체로만 전달하고 로그·응답에 남기지 않는다.
+    # ``adminUserId``(credential 아님)는 terminal completion event 식별자로 전달한다.
+    if payload.mode == "delta":
+        delta_request = DeltaSyncRequest(
+            previous_snapshot_path=deps.previous_snapshot_path,
+            access_token=payload.access_token,
+            cloud_id=payload.cloud_id,
+            admin_user_id=payload.admin_user_id,
+        )
+        background_tasks.add_task(_run_delta_ingest_job, deps, job.job_id, delta_request)
+    else:
+        # space_key 미지정(기본 "") → 전체 스페이스 수집(api-spec v2.4.0 §2-2).
+        crawl_request = CrawlRequest(
+            access_token=payload.access_token,
+            cloud_id=payload.cloud_id,
+            admin_user_id=payload.admin_user_id,
+        )
+        background_tasks.add_task(_run_ingest_job, deps, job.job_id, payload.mode, crawl_request)
     return {
         "jobId": job.job_id,
         "status": job.status.value,

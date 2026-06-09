@@ -507,3 +507,29 @@ completion event seam 만 도입한다(제거 대상 없음).
 **검증**: 변경 8파일 `ruff format`/`ruff check`(All checks passed) + `mypy --python-version 3.11`
 (no issues) + py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11 환경에서 수행한다
 (샌드박스 Linux 에 3.11 인터프리터 부재).
+
+## 2026-06-09 — FR-005 delta 수집 라우팅 (`/ml/ingest` mode=delta → Delta Sync)
+
+`/ml/ingest` 가 `mode` 를 검증만 하고 full·delta 둘 다 full-crawl 합성으로 처리하던 갭을 해소했다.
+이제 `mode=delta` 는 vendored Data Sync Agent 래퍼(`run_delta_sync`)로 분기한다. delta 실행 함수
+(`app/ingestion/sync.py:run_delta_sync`)는 이미 완결돼 있어 그대로 사용한다(무수정).
+
+**변경**
+
+- `app/config.py` — `data_sync_previous_snapshot` 설정 추가(Delta Sync 이전 스냅샷 경로).
+- `app/api/deps.py` — `IngestDeps` 에 `run_delta`(`Callable[[DeltaSyncRequest], DeltaSyncResult]`)
+  + `previous_snapshot_path` 추가. 기본 delta 러너는 PoC 안전(변경분 없음, `_poc_empty_delta`)이며,
+  운영 delta(`run_delta_sync` 실 client/snapshot)는 infra/worker 진입점에서 주입한다
+  (`completion_publisher` 와 동일 패턴).
+- `app/api/routes.py` — `ingest_route` 가 `mode=="delta"` 분기 → `_run_delta_ingest_job`
+  (IN_PROGRESS → `deps.run_delta` → COMPLETED/FAILED) 백그라운드 실행. 상태 카운트는
+  `processed=changed_pages` / `failed=failed_items` / `total=합`. terminal 에서 completion
+  event(mode="delta") 발행. 삭제 후보(`deleted_candidate_page_ids`)의 soft-delete 실적용은
+  SyncWorker/스케줄러 책임이라 본 잡은 카운트만 보고한다(범위 밖 — featureI-7c).
+- `tests/api/test_ingest_route.py` — delta 회귀 2건(완료 카운트 + completion event; 실패 →
+  FAILED) 추가. full 실패 회귀는 `mode=full` 로 정정.
+
+**범위 밖**: 삭제 후보 soft-delete 실적용·주기 스케줄러(featureI-7c), ACL/소스 운영 기본값 전환.
+
+**검증**: 변경 4파일 `ruff format`/`ruff check`(All checks passed) + `mypy app`(59 files, no issues)
++ py_compile 통과. 전체 `pytest`·`./scripts/verify.sh` 는 Mac/3.11(샌드박스 3.11 부재).

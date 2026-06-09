@@ -14,6 +14,9 @@
   - 2026-06-09, api-spec v2.5.0 정합 — IngestDeps 에 ``completion_publisher`` 추가. 기본값은
     local/PoC 안전성을 위해 ``NoopIngestCompletionPublisher`` 이며, 운영 RabbitMQ 발행 wiring 은
     infra/worker 진입점에서 주입한다.
+  - 2026-06-09, FR-005 delta 라우팅 — IngestDeps 에 ``run_delta``/``previous_snapshot_path`` 추가.
+    기본값은 PoC 안전(변경분 없음)이며, 운영 delta(``run_delta_sync`` 실 client/snapshot)는
+    infra/worker 진입점에서 주입한다.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -32,11 +35,24 @@ from app.config import Settings
 from app.ingestion.bootstrap import build_soft_delete_store
 from app.ingestion.crawler import CrawlRequest, CrawlResult
 from app.ingestion.pipeline import run_poc_ingestion
+from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
 from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps
 from app.storage.ingest_jobs import IngestJobStore, InMemoryIngestJobStore
 
 # 크롤 러너 시그니처 — ``CrawlRequest`` 를 받아 집계 ``CrawlResult`` 를 돌려준다.
 CrawlRunner = Callable[[CrawlRequest], CrawlResult]
+# Delta 러너 시그니처 — ``DeltaSyncRequest`` 를 받아 집계 ``DeltaSyncResult`` 를 돌려준다.
+DeltaRunner = Callable[[DeltaSyncRequest], DeltaSyncResult]
+
+
+def _poc_empty_delta(_request: DeltaSyncRequest) -> DeltaSyncResult:
+    """PoC 기본 delta 러너 — 변경분 없음(외부 의존성 0).
+
+    vendored Data Sync Agent(``run_delta_sync``)는 실 Confluence client + 직전 스냅샷을 요구하므로,
+    PoC/local 기본 경로는 변경분 없음으로 안전 동작한다. 운영 delta 는 worker/infra 진입점에서 실
+    client·snapshot 을 주입한 ``run_delta_sync`` 러너로 교체한다(completion_publisher 와 동일 패턴).
+    """
+    return DeltaSyncResult()
 
 
 @dataclass
@@ -50,6 +66,10 @@ class IngestDeps:
     # 기본값 None(또는 Noop)이면 발행하지 않는다(local/PoC 안전). 운영 RabbitMQ wiring 은
     # infra/worker 진입점에서 주입한다.
     completion_publisher: IngestCompletionPublisher | None = None
+    # FR-005 — mode=delta 러너 + 이전 스냅샷 경로(DeltaSyncRequest 구성용). 기본값은 PoC 안전(변경분
+    # 없음)이며, 운영 delta 는 infra/worker 진입점에서 run_delta_sync 로 교체 주입한다.
+    run_delta: DeltaRunner = _poc_empty_delta
+    previous_snapshot_path: str = ""
 
 
 def build_ingest_deps(settings: Settings) -> IngestDeps:
@@ -86,4 +106,7 @@ def build_ingest_deps(settings: Settings) -> IngestDeps:
         sync_worker=sync_worker,
         # local/PoC 안전 기본값 — 운영 RabbitMQ 발행 wiring 은 worker/infra 진입점에서 주입한다.
         completion_publisher=NoopIngestCompletionPublisher(),
+        # FR-005 — delta 러너는 PoC 안전 기본값(변경분 없음). 운영 delta 는 infra 진입점에서
+        # ``run_delta_sync``(실 client/snapshot)로 교체한다. 스냅샷 경로만 설정에서 주입.
+        previous_snapshot_path=settings.data_sync_previous_snapshot,
     )

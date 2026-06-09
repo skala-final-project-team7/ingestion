@@ -6,6 +6,7 @@
 - GET /ml/ingest/health → {"status": "UP"}.
 - (v2.5.0) terminal(COMPLETED/FAILED) 상태에서 credential 없는 RabbitMQ completion event 발행
   + adminUserId 식별자.
+- (FR-005) mode=delta 는 run_crawl 이 아니라 run_delta(Delta Sync)로 분기·카운트 보고.
 
 크롤 러너는 stub 으로 주입해(외부 컨테이너·샘플 파일 의존 없이) 잡 카운트 집계만 결정론적으로
 검증한다. ASGITransport 는 응답 완료 전에 BackgroundTasks 를 끝내므로 POST 직후 상태 조회 시
@@ -18,11 +19,12 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
-from app.api.deps import IngestDeps
+from app.api.deps import DeltaRunner, IngestDeps
 from app.api.ingest_completion import IngestCompletionPublisher, QueueIngestCompletionPublisher
 from app.api.main import create_app
 from app.api.routes import get_deps
 from app.ingestion.crawler import CrawlRequest, CrawlResult
+from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
 from app.ingestion.workers.publisher import FakeQueuePublisher
 from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps
 from app.storage.ingest_jobs import InMemoryIngestJobStore
@@ -33,11 +35,14 @@ def _stub_deps(
     *,
     completion_publisher: IngestCompletionPublisher | None = None,
     fail: bool = False,
+    run_delta: DeltaRunner | None = None,
 ) -> IngestDeps:
-    """stub 크롤 러너(3 성공 + 1 실패)를 가진 IngestDeps — 카운트 집계 결정론.
+    """stub 크롤/델타 러너를 가진 IngestDeps — 카운트 집계 결정론.
 
-    ``completion_publisher`` 를 주입하면 terminal 상태 completion event 발행을 검증할 수 있고,
-    ``fail=True`` 면 크롤이 예외를 던져 FAILED 경로를 재현한다.
+    - 크롤 stub: 3 성공 + 1 실패. ``fail=True`` 면 크롤이 예외를 던진다(full FAILED 경로, 또는
+      delta 분기가 크롤을 호출하지 않음을 보장).
+    - ``run_delta`` 미지정 시 IngestDeps 기본 PoC(변경분 없음) 러너; 지정 시 delta 분기 검증에 사용.
+    - ``completion_publisher`` 주입 시 terminal completion event 발행을 검증할 수 있다.
     """
 
     def _run_crawl(request: CrawlRequest) -> CrawlResult:
@@ -49,11 +54,15 @@ def _stub_deps(
             failed_page_ids=["p-bad"],
         )
 
+    delta_kwargs: dict[str, DeltaRunner] = {}
+    if run_delta is not None:
+        delta_kwargs["run_delta"] = run_delta
     return IngestDeps(
         job_store=InMemoryIngestJobStore(),
         run_crawl=_run_crawl,
         sync_worker=SyncWorker(SyncWorkerDeps(store=FakeQdrantPoolStore())),
         completion_publisher=completion_publisher,
+        **delta_kwargs,
     )
 
 
@@ -164,13 +173,13 @@ async def test_ingest_completed_publishes_completion_event_without_credentials()
 
 @pytest.mark.asyncio
 async def test_ingest_failure_publishes_failed_completion_event() -> None:
-    """크롤 실패 시 status=FAILED + errorCode=INGEST_FAILED completion event(credential 미포함)."""
+    """크롤(full) 실패 시 FAILED + errorCode=INGEST_FAILED completion event(credential 미포함)."""
     queue = FakeQueuePublisher()
     deps = _stub_deps(completion_publisher=QueueIngestCompletionPublisher(queue), fail=True)
     async with _client(deps) as client:
         resp = await client.post(
             "/ml/ingest",
-            json={"mode": "delta", "adminUserId": "712020:admin", "cloudId": "cid-123"},
+            json={"mode": "full", "adminUserId": "712020:admin", "cloudId": "cid-123"},
         )
         assert resp.status_code == 200
         job_id = resp.json()["jobId"]
@@ -179,7 +188,7 @@ async def test_ingest_failure_publishes_failed_completion_event() -> None:
     assert status_resp.json()["status"] == "FAILED"
     assert len(queue.messages) == 1
     msg = queue.messages[0]
-    assert msg.body["mode"] == "delta"
+    assert msg.body["mode"] == "full"
     assert msg.body["status"] == "FAILED"
     assert msg.body["errorCode"] == "INGEST_FAILED"
     assert "cloudId" not in msg.body
@@ -194,3 +203,70 @@ async def test_ingest_without_publisher_still_completes() -> None:
         job_id = resp.json()["jobId"]
         status_resp = await client.get(f"/ml/ingest/status/{job_id}")
     assert status_resp.json()["status"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_ingest_delta_runs_delta_runner_and_reports_counts() -> None:
+    """FR-005 — mode=delta 는 run_delta(Delta Sync)로 분기하고 delta 카운트를 status 에 반영한다."""
+    queue = FakeQueuePublisher()
+
+    def _run_delta(request: DeltaSyncRequest) -> DeltaSyncResult:
+        return DeltaSyncResult(
+            changed_pages=2,
+            deleted_candidate_page_ids=["d1", "d2"],
+            failed_items=1,
+        )
+
+    # fail=True → run_crawl 이 호출되면 예외. delta 분기가 COMPLETED 되면 크롤을 안 탔다는 증거.
+    deps = _stub_deps(
+        completion_publisher=QueueIngestCompletionPublisher(queue),
+        fail=True,
+        run_delta=_run_delta,
+    )
+    async with _client(deps) as client:
+        resp = await client.post(
+            "/ml/ingest", json={"mode": "delta", "adminUserId": "712020:admin"}
+        )
+        assert resp.status_code == 200
+        job_id = resp.json()["jobId"]
+        status_resp = await client.get(f"/ml/ingest/status/{job_id}")
+
+    status = status_resp.json()
+    assert status["status"] == "COMPLETED"
+    assert status["processedPages"] == 2  # changed_pages
+    assert status["failedPages"] == 1  # failed_items
+    assert status["totalPages"] == 3  # changed + failed (삭제 후보는 status 미반영)
+    assert len(queue.messages) == 1
+    msg = queue.messages[0]
+    assert msg.body["mode"] == "delta"
+    assert msg.body["status"] == "COMPLETED"
+    assert msg.body["adminUserId"] == "712020:admin"
+    assert "cloudId" not in msg.body
+
+
+@pytest.mark.asyncio
+async def test_ingest_delta_failure_publishes_failed_completion_event() -> None:
+    """delta 실행 실패 시 status=FAILED + errorCode=INGEST_FAILED completion event(mode=delta)."""
+    queue = FakeQueuePublisher()
+
+    def _run_delta(request: DeltaSyncRequest) -> DeltaSyncResult:
+        raise RuntimeError("delta boom")
+
+    deps = _stub_deps(
+        completion_publisher=QueueIngestCompletionPublisher(queue),
+        run_delta=_run_delta,
+    )
+    async with _client(deps) as client:
+        resp = await client.post(
+            "/ml/ingest", json={"mode": "delta", "adminUserId": "712020:admin"}
+        )
+        assert resp.status_code == 200
+        job_id = resp.json()["jobId"]
+        status_resp = await client.get(f"/ml/ingest/status/{job_id}")
+
+    assert status_resp.json()["status"] == "FAILED"
+    assert len(queue.messages) == 1
+    msg = queue.messages[0]
+    assert msg.body["mode"] == "delta"
+    assert msg.body["status"] == "FAILED"
+    assert msg.body["errorCode"] == "INGEST_FAILED"

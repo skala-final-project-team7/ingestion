@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     # credential set 은 절대 포함하지 않는다(루트 CLAUDE.md 보안 규칙).
     ingest_completion_routing_key: str = "ingestion.completed"
 
+    # --- Delta Sync (FR-005) ---
+    # mode=delta 가 vendored Data Sync Agent(run_delta_sync)로 직전 수집 스냅샷과 변경분을 비교할 때
+    # 사용하는 이전 스냅샷 파일 경로. 운영에서는 raw store/스냅샷 repository 로 교체될 수 있으나
+    # 현재 vendored 계약은 파일 경로를 요구한다.
+    data_sync_previous_snapshot: str = "data/snapshots/latest_snapshot.json"
+
     # --- OpenAI ---
     openai_api_key: SecretStr = SecretStr("")
     llm_answer_model: str = "gpt-4o"
