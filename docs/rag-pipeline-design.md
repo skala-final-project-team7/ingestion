@@ -97,8 +97,10 @@ PoC 어댑터 (본 저장소 구현 대상):
 `extracted_format`(`raw_text`|`sheet_serialized`), `file_size_bytes`, `download_url`,
 `parent_page_id`, `last_modified`.
 
-> `allowed_groups`·`allowed_users`가 모두 비면 '공개 문서'가 아닌 **ACL 누락 오류**로 간주,
-> `INVALID_ACL`로 색인 스킵(보안 안전 측 정책). 첨부는 부모 페이지 ACL 상속.
+> ACL 산출 결과(`allowed_groups`·`allowed_users`)가 정책 적용 후에도 **모두 비면**(공개 sentinel `"*"`·
+> page-level·`space:{key}` 폴백 중 어느 것도 부여되지 않은 경우) **ACL 누락 오류**(`INVALID_ACL`)로 색인
+> 스킵한다(보안 안전 측). restriction 이 비어 있을 뿐인 페이지는 `allow_authenticated` 정책이 `"*"`를
+> 부여하므로 스킵 대상이 아니다(아래 결정 참조). 첨부는 부모 페이지 ACL 상속.
 
 > **✅ ACL 결정 완료 (api-spec v2.4/v2.5)** — 운영 ACL은 청크별 `allowed_groups`/`allowed_users`
 > Payload로 적재하며, page-level **read restriction API**(`/rest/api/content/{id}/restriction/

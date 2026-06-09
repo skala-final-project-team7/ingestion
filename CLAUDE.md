@@ -64,7 +64,7 @@ RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통
 ### 첨부 텍스트 추출기 (FR-002) 작업
 
 - `docs/architecture.md`
-- `docs/db-schema.md` (`attachment_texts`)
+- `docs/db-schema.md` (`raw_attachments.extracted_text` — 별도 attachment_texts 미사용)
 - `app/ingestion/extractor/`
 
 ### Chunking (FR-003) / Embedding (FR-004) 작업

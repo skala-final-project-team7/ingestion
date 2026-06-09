@@ -193,7 +193,7 @@ Data Ingestion Agent(Full Crawl) / Data Sync Agent(Delta) 가 수집한 표준 `
 | `body_html` | string | Confluence storage HTML 원문(청커가 파싱) |
 | `version_number` | integer | 재색인 멱등성 비교 키 |
 | `last_modified` | datetime(ISO) | Delta Sync 변경 비교 키 |
-| `allowed_groups` / `allowed_users` | string[] | ACL(PoC: `space_key` 합성 — §1.4 미해결) |
+| `allowed_groups` / `allowed_users` | string[] | 운영 ACL(page-level read restriction; 빈 권한은 `"*"` sentinel). Admin-Key-OFF는 `space:{key}` 합성 폴백 — §1.4 |
 | `webui_link` | string | 출처 카드 원본 URL |
 | `labels` / `ancestors` / `attachments` | array | 에이전트 MVP 미산출 → 현재 빈 배열(TBD) |
 
