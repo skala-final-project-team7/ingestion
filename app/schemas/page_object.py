@@ -31,7 +31,7 @@ class Attachment(BaseModel):
         청커가 첨부 파일을 파일 시스템에서 직접 열어 텍스트를 추출해야 할 때는
         ``local_path``를 우선 사용한다. 운영(Atlassian) 어댑터는 ``local_path``를
         비워두고, 청커는 별도 다운로드 헬퍼로 임시 경로를 채운 뒤 호출한다.
-        결정 근거: docs/adr/0001-attachment-source-url.md (P1-3, 2026-05-17).
+        결정 근거: 코드리뷰 P1-3 (2026-05-17) — download_url(노출용)/local_path(파일 경로) 분리.
     """
 
     attachment_id: str
