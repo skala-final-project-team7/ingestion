@@ -93,5 +93,7 @@
     `ChangedDocument` 를 `PageObject` 로 변환, 삭제 후보 page_id 집계.
 - vendored 스키마(중첩 space/page/body)와 ingestion 계약(평면 `PageObject`)이 어긋나는 부분
   (ACL·labels·ancestors·attachments 미산출)은 **어댑터에서 변환·합성**한다(vendored 무수정 보존).
-- 미해결(추측 구현 금지): ACL 실연동, `access_token`/`cloud_id` 전달 경로, 첨부 수집,
-  crawl 단계 `ingestion_jobs` stage(공유 enum). 상세는 `docs/ai/current-plan.md` featureI-6 TBD.
+- 통합 갭(추측 구현 금지): page-level ACL 실연동(모델은 확정 — api-spec v2.4/v2.5·ADR 0003 항목 1;
+  vendored MVP 가 read restriction 미산출), credential 전달(`adminUserId` 기반 auth-server 조회 —
+  api-spec §2-2/§2-5), 첨부 수집. crawl 단계 `ingestion_jobs` stage 는 ADR 0003 항목 3 으로 해소됨.
+  상세는 `docs/ai/current-plan.md`.

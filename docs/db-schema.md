@@ -83,11 +83,13 @@ payload 필드로 복원한다.
 검색 시 ACL 필터는 `@enforce_acl` 데코레이터에서 항상 `AND`로 주입된다. ACL 조건이 빠진 검색
 호출은 `ACLViolationError`로 거부된다. 상세는 `docs/rag-pipeline-design.md` §6.
 
-> **✓ ACL 필드 모델 — PoC 결정: 대안 (A) `space_key` 합성** (ingestion↔rag 합의, **ADR 0003** 참조).
-> 설계서·기획서 §6.6은 ACL을 청크별 `allowed_groups`/`allowed_users` Payload로 정의하나, 제공된
-> Atlassian API 명세에는 페이지 단위 권한(content restrictions) API가 없고 **Space 단위 권한
-> (`DATA-03` — 사용자가 접근 가능한 Space 목록)만** 존재한다(기획서 §6.2/§6.5도 ACL을 '스페이스
-> 접근 권한'으로 기술, 샘플 데이터에도 ACL 필드 없음). 따라서 PoC는 아래 (A)로 확정한다.
+> **✓ ACL 필드 모델 (api-spec v2.4/v2.5) — page-level `allowed_groups`/`allowed_users` 채택,
+> `space_key` 합성은 Admin-Key-OFF 폴백** (ingestion↔rag 합의, **ADR 0003** 참조).
+> 설계서·기획서 §6.6은 ACL을 청크별 `allowed_groups`/`allowed_users` Payload로 정의한다. 초기에는
+> 명세에 페이지 단위 권한 API가 없다고 보아 Space 단위 합성을 PoC 로 썼으나, 이후 Admin Key +
+> page-level read restriction(`/rest/api/content/{id}/restriction/byOperation/read`)으로 페이지별
+> 권한 수집이 가능함이 확인되어 아래 **(B) page-level 을 채택**하고 (A) `space_key` 합성은 Admin Key
+> 미사용 시 폴백으로 둔다.
 >
 > - **(A) `space_key` 기반 — PoC 폴백(admin key off).** `atlassian_use_admin_key=False`이면 수집 시
 >   `allowed_groups`를 `["space:{space_key}"]`로 합성하고(`_synthesize_acl`/`synthesize_space_acl`),
